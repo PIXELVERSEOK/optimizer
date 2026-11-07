@@ -1,0 +1,478 @@
+<UserControl x:Class="EvoOptimizer.App.Views.EvoTweakPanel"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             Background="#0D1117">
+
+    <UserControl.Resources>
+        <Style TargetType="TextBlock">
+            <Setter Property="Foreground" Value="#E6EDF3"/>
+            <Setter Property="FontFamily" Value="Segoe UI"/>
+            <Setter Property="TextWrapping" Value="Wrap"/>
+        </Style>
+
+        <Style TargetType="Button">
+            <Setter Property="Padding" Value="10,6"/>
+            <Setter Property="Margin" Value="3"/>
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="Background" Value="#21262D"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="FontSize" Value="11"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+        </Style>
+
+        <Style x:Key="PrimaryButton" TargetType="Button">
+            <Setter Property="Padding" Value="12,7"/>
+            <Setter Property="Margin" Value="3"/>
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="Background" Value="#238636"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="FontSize" Value="11"/>
+            <Setter Property="FontWeight" Value="Bold"/>
+        </Style>
+
+        <Style x:Key="AccentButton" TargetType="Button" BasedOn="{StaticResource PrimaryButton}">
+            <Setter Property="Background" Value="#1F6FEB"/>
+        </Style>
+
+        <Style x:Key="DangerButton" TargetType="Button" BasedOn="{StaticResource PrimaryButton}">
+            <Setter Property="Background" Value="#8E2F2C"/>
+        </Style>
+
+        <Style x:Key="SmallButton" TargetType="Button">
+            <Setter Property="Padding" Value="8,3"/>
+            <Setter Property="Margin" Value="2"/>
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="Background" Value="#21262D"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="FontSize" Value="10"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+        </Style>
+
+        <Style x:Key="Card" TargetType="Border">
+            <Setter Property="Background" Value="#161B22"/>
+            <Setter Property="BorderBrush" Value="#30363D"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="CornerRadius" Value="10"/>
+            <Setter Property="Padding" Value="12"/>
+            <Setter Property="Margin" Value="4"/>
+        </Style>
+
+        <Style x:Key="SectionTitle" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="FontWeight" Value="Bold"/>
+            <Setter Property="Foreground" Value="#58A6FF"/>
+            <Setter Property="Margin" Value="4,10,4,6"/>
+        </Style>
+
+        <Style x:Key="Muted" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="#8B949E"/>
+            <Setter Property="FontSize" Value="11"/>
+        </Style>
+
+        <Style x:Key="SpecValue" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Margin" Value="0,3,0,0"/>
+        </Style>
+
+        <Style TargetType="TextBox">
+            <Setter Property="Background" Value="#0D1117"/>
+            <Setter Property="Foreground" Value="#E6EDF3"/>
+            <Setter Property="BorderBrush" Value="#30363D"/>
+            <Setter Property="Padding" Value="8,6"/>
+            <Setter Property="CaretBrush" Value="#E6EDF3"/>
+        </Style>
+
+        <Style TargetType="ComboBox">
+            <Setter Property="Background" Value="#161B22"/>
+            <Setter Property="Foreground" Value="#E6EDF3"/>
+            <Setter Property="Padding" Value="6,4"/>
+        </Style>
+
+        <Style TargetType="TabControl">
+            <Setter Property="Background" Value="#0D1117"/>
+            <Setter Property="BorderBrush" Value="#30363D"/>
+        </Style>
+
+        <Style TargetType="TabItem">
+            <Setter Property="Foreground" Value="#8B949E"/>
+            <Setter Property="FontWeight" Value="Bold"/>
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="Padding" Value="16,8"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="TabItem">
+                        <Border x:Name="TabBorder"
+                                Background="Transparent"
+                                BorderBrush="Transparent"
+                                BorderThickness="0,0,0,2"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter ContentSource="Header"
+                                              HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="TabBorder" Property="BorderBrush" Value="#2F81F7"/>
+                                <Setter Property="Foreground" Value="#E6EDF3"/>
+                            </Trigger>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter Property="Foreground" Value="#E6EDF3"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="GridHeader" TargetType="DataGridColumnHeader">
+            <Setter Property="Background" Value="#161B22"/>
+            <Setter Property="Foreground" Value="#58A6FF"/>
+            <Setter Property="FontWeight" Value="Bold"/>
+            <Setter Property="FontSize" Value="11"/>
+            <Setter Property="Padding" Value="8,6"/>
+            <Setter Property="BorderBrush" Value="#30363D"/>
+            <Setter Property="BorderThickness" Value="0,0,1,1"/>
+        </Style>
+
+        <Style x:Key="TweakGrid" TargetType="DataGrid">
+            <Setter Property="Background" Value="#0D1117"/>
+            <Setter Property="RowBackground" Value="#161B22"/>
+            <Setter Property="AlternatingRowBackground" Value="#11161D"/>
+            <Setter Property="Foreground" Value="#E6EDF3"/>
+            <Setter Property="BorderBrush" Value="#30363D"/>
+            <Setter Property="GridLinesVisibility" Value="Horizontal"/>
+            <Setter Property="HorizontalGridLinesBrush" Value="#21262D"/>
+            <Setter Property="RowHeaderWidth" Value="0"/>
+            <Setter Property="HeadersVisibility" Value="Column"/>
+            <Setter Property="AutoGenerateColumns" Value="False"/>
+            <Setter Property="CanUserAddRows" Value="False"/>
+            <Setter Property="CanUserDeleteRows" Value="False"/>
+            <Setter Property="IsReadOnly" Value="True"/>
+            <Setter Property="SelectionMode" Value="Single"/>
+            <Setter Property="ColumnHeaderStyle" Value="{StaticResource GridHeader}"/>
+            <Setter Property="FontSize" Value="11"/>
+        </Style>
+    </UserControl.Resources>
+
+    <Grid Margin="14,10,14,10">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <StackPanel Grid.Row="0">
+            <TextBlock Text="ESCÁNER · TWEAKS · DEBLOAT"
+                       FontSize="18"
+                       FontWeight="Bold"
+                       Foreground="#E6EDF3"/>
+            <TextBlock Style="{StaticResource Muted}"
+                       Margin="0,2,0,0"
+                       Text="Escáner de solo lectura, tweaks de registro reversibles y debloat UWP con restauración por AppxManifest. Ninguna escritura ocurre sin confirmación explícita."/>
+        </StackPanel>
+
+        <TabControl Grid.Row="1" Margin="0,10,0,0">
+
+            <!-- ══════════════ SCANNER ══════════════ -->
+            <TabItem Header="SCANNER">
+                <Grid Margin="6,10,6,6">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+
+                    <StackPanel Grid.Row="0" Orientation="Horizontal">
+                        <Button x:Name="ScannerRunButton"
+                                Style="{StaticResource AccentButton}"
+                                Content="ESCANEAR EQUIPO"
+                                IsEnabled="{Binding CanRunScanner}"
+                                Click="ScannerRun_Click"/>
+                        <Button Style="{StaticResource SmallButton}"
+                                Content="EXPORTAR INFORME"
+                                Click="ScannerExport_Click"/>
+                        <TextBlock Style="{StaticResource Muted}"
+                                   VerticalAlignment="Center"
+                                   Margin="10,0,0,0"
+                                   Text="{Binding ScannerAtText, TargetNullValue='Sin escaneo'}"/>
+                    </StackPanel>
+
+                    <TextBlock Grid.Row="1"
+                               Margin="4,8,4,4"
+                               FontWeight="SemiBold"
+                               Foreground="#D29922"
+                               Text="{Binding ScannerStatusText}"/>
+
+                    <UniformGrid Grid.Row="2" Columns="4" Margin="0,4,0,4">
+                        <Border Style="{StaticResource Card}">
+                            <StackPanel>
+                                <TextBlock Text="PROCESADOR" Style="{StaticResource Muted}"/>
+                                <TextBlock Style="{StaticResource SpecValue}" Text="{Binding ScannerCpuText}"/>
+                            </StackPanel>
+                        </Border>
+                        <Border Style="{StaticResource Card}">
+                            <StackPanel>
+                                <TextBlock Text="GRÁFICOS" Style="{StaticResource Muted}"/>
+                                <TextBlock Style="{StaticResource SpecValue}" Text="{Binding ScannerGpuText}"/>
+                            </StackPanel>
+                        </Border>
+                        <Border Style="{StaticResource Card}">
+                            <StackPanel>
+                                <TextBlock Text="MEMORIA" Style="{StaticResource Muted}"/>
+                                <TextBlock Style="{StaticResource SpecValue}" Text="{Binding ScannerMemoryText}"/>
+                            </StackPanel>
+                        </Border>
+                        <Border Style="{StaticResource Card}">
+                            <StackPanel>
+                                <TextBlock Text="ALMACENAMIENTO" Style="{StaticResource Muted}"/>
+                                <TextBlock Style="{StaticResource SpecValue}" Text="{Binding ScannerStorageText}"/>
+                            </StackPanel>
+                        </Border>
+                        <Border Style="{StaticResource Card}">
+                            <StackPanel>
+                                <TextBlock Text="PANTALLA" Style="{StaticResource Muted}"/>
+                                <TextBlock Style="{StaticResource SpecValue}" Text="{Binding ScannerDisplayText}"/>
+                            </StackPanel>
+                        </Border>
+                        <Border Style="{StaticResource Card}">
+                            <StackPanel>
+                                <TextBlock Text="SISTEMA" Style="{StaticResource Muted}"/>
+                                <TextBlock Style="{StaticResource SpecValue}" Text="{Binding ScannerOsText}"/>
+                            </StackPanel>
+                        </Border>
+                        <Border Style="{StaticResource Card}">
+                            <StackPanel>
+                                <TextBlock Text="PLACA / BIOS" Style="{StaticResource Muted}"/>
+                                <TextBlock Style="{StaticResource SpecValue}" Text="{Binding ScannerTopologyText}"/>
+                            </StackPanel>
+                        </Border>
+                        <Border Style="{StaticResource Card}">
+                            <StackPanel>
+                                <TextBlock Text="REFERENCIA DEL BRIEF" Style="{StaticResource Muted}"/>
+                                <TextBlock Style="{StaticResource SpecValue}"
+                                           FontSize="10"
+                                           Foreground="#8B949E"
+                                           Text="{Binding ScannerBriefText}"/>
+                            </StackPanel>
+                        </Border>
+                    </UniformGrid>
+
+                    <DataGrid Grid.Row="3"
+                              Style="{StaticResource TweakGrid}"
+                              ItemsSource="{Binding ScannerRows}">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="CATEGORÍA" Binding="{Binding Category}" Width="150"/>
+                            <DataGridTextColumn Header="DATO" Binding="{Binding Name}" Width="240"/>
+                            <DataGridTextColumn Header="VALOR DETECTADO" Binding="{Binding Value}" Width="*"/>
+                            <DataGridTextColumn Header="ORIGEN" Binding="{Binding Source}" Width="220"/>
+                            <DataGridTextColumn Header="CONFIABILIDAD" Binding="{Binding Confidence}" Width="150"/>
+                            <DataGridTextColumn Header="MEDIDO" Binding="{Binding MeasuredAtText}" Width="150"/>
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </Grid>
+            </TabItem>
+
+            <!-- ══════════════ TWEAKS ══════════════ -->
+            <TabItem Header="TWEAKS">
+                <Grid Margin="6,10,6,6">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+
+                    <StackPanel Grid.Row="0" Orientation="Horizontal">
+                        <Button x:Name="TweakScanButton"
+                                Style="{StaticResource AccentButton}"
+                                Content="ESCANEAR TWEAKS"
+                                IsEnabled="{Binding CanScanTweaks}"
+                                Click="TweakScan_Click"/>
+                        <Button Style="{StaticResource PrimaryButton}"
+                                Content="APLICAR SÓLO RIESGO BAJO"
+                                Click="TweakApplyAllLowRisk_Click"/>
+                        <Button Style="{StaticResource DangerButton}"
+                                Content="REVERTIR TODOS"
+                                Click="TweakRollbackAll_Click"/>
+                        <TextBox Width="240"
+                                 Margin="8,0,0,0"
+                                 Text="{Binding TweakSearchText, UpdateSourceTrigger=PropertyChanged, Mode=TwoWay}"
+                                 ToolTip="Buscar por nombre, descripción, clave o estado"/>
+                        <ComboBox Width="170"
+                                  Margin="6,0,0,0"
+                                  ItemsSource="{Binding TweakCategories}"
+                                  SelectedItem="{Binding SelectedTweakCategory, Mode=TwoWay}"/>
+                    </StackPanel>
+
+                    <StackPanel Grid.Row="1" Margin="4,8,4,0">
+                        <TextBlock FontWeight="SemiBold"
+                                   Foreground="#D29922"
+                                   Text="{Binding TweakStatusText}"/>
+                        <TextBlock Style="{StaticResource Muted}"
+                                   Margin="0,4,0,0"
+                                   Text="{Binding TweakCountsText}"/>
+                        <TextBlock Style="{StaticResource Muted}"
+                                   Margin="0,2,0,0"
+                                   Text="{Binding TweakJournalHint}"/>
+                    </StackPanel>
+
+                    <Border Grid.Row="2"
+                            Style="{StaticResource Card}"
+                            Margin="4,8,4,4"
+                            Padding="10">
+                        <TextBlock Style="{StaticResource Muted}"
+                                   Text="Cada APLICAR abre confirmación con valor actual → valor propuesto, beneficio y riesgo. HKCU se escribe en proceso; HKLM dispara UNA solicitud UAC y EVO relee para verificar. Si la relectura no coincide, se restaura el valor original y el tweak queda FALLIDO."/>
+                    </Border>
+
+                    <DataGrid Grid.Row="3"
+                              Style="{StaticResource TweakGrid}"
+                              ItemsSource="{Binding TweakView}">
+                        <DataGrid.Columns>
+                            <DataGridTemplateColumn Header="ESTADO" Width="190">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <Border Background="{Binding StateColor}"
+                                                CornerRadius="8"
+                                                Padding="7,3"
+                                                Margin="3"
+                                                HorizontalAlignment="Left">
+                                            <TextBlock Text="{Binding StateLabel}"
+                                                       Foreground="White"
+                                                       FontSize="10"
+                                                       FontWeight="Bold"/>
+                                        </Border>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+                            <DataGridTextColumn Header="TWEAK" Binding="{Binding Name}" Width="230"/>
+                            <DataGridTextColumn Header="CATEGORÍA" Binding="{Binding CategoryLabel}" Width="130"/>
+                            <DataGridTextColumn Header="QUÉ HACE" Binding="{Binding Description}" Width="320"/>
+                            <DataGridTextColumn Header="BENEFICIO ESPERADO" Binding="{Binding Benefit}" Width="260"/>
+                            <DataGridTextColumn Header="UBICACIÓN" Binding="{Binding RegistryLocation}" Width="320"/>
+                            <DataGridTextColumn Header="VALOR ACTUAL" Binding="{Binding CurrentValueLabel}" Width="200"/>
+                            <DataGridTextColumn Header="PROPUESTO" Binding="{Binding DesiredLabel}" Width="160"/>
+                            <DataGridTextColumn Header="ELEVACIÓN" Binding="{Binding ElevationLabel}" Width="160"/>
+                            <DataGridTextColumn Header="RIESGO" Binding="{Binding RiskLabel}" Width="120"/>
+                            <DataGridTextColumn Header="REINICIO" Binding="{Binding RebootLabel}" Width="120"/>
+                            <DataGridTextColumn Header="MEDIDO" Binding="{Binding MeasuredAtText}" Width="150"/>
+                            <DataGridTemplateColumn Header="ACCIÓN" Width="190">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <StackPanel Orientation="Horizontal">
+                                            <Button Style="{StaticResource SmallButton}"
+                                                    Content="APLICAR"
+                                                    Tag="{Binding Id}"
+                                                    IsEnabled="{Binding CanApply}"
+                                                    Click="TweakApply_Click"/>
+                                            <Button Style="{StaticResource SmallButton}"
+                                                    Content="REVERTIR"
+                                                    Background="#8E2F2C"
+                                                    Tag="{Binding Id}"
+                                                    IsEnabled="{Binding CanRollback}"
+                                                    Click="TweakRollback_Click"/>
+                                        </StackPanel>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </Grid>
+            </TabItem>
+
+            <!-- ══════════════ DEBLOAT ══════════════ -->
+            <TabItem Header="DEBLOAT">
+                <Grid Margin="6,10,6,6">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+
+                    <StackPanel Grid.Row="0" Orientation="Horizontal">
+                        <Button x:Name="DebloatScanButton"
+                                Style="{StaticResource AccentButton}"
+                                Content="ESCANEAR APPS UWP"
+                                IsEnabled="{Binding CanScanDebloat}"
+                                Click="DebloatScan_Click"/>
+                        <TextBlock Style="{StaticResource Muted}"
+                                   VerticalAlignment="Center"
+                                   Margin="10,0,0,0"
+                                   Text="{Binding DebloatScannedAtText, TargetNullValue='Sin escaneo'}"/>
+                    </StackPanel>
+
+                    <StackPanel Grid.Row="1" Margin="4,8,4,0">
+                        <TextBlock FontWeight="SemiBold"
+                                   Foreground="#D29922"
+                                   Text="{Binding DebloatStatusText}"/>
+                        <TextBlock Style="{StaticResource Muted}"
+                                   Margin="0,4,0,0"
+                                   Text="{Binding DebloatCountsText}"/>
+                    </StackPanel>
+
+                    <Border Grid.Row="2"
+                            Style="{StaticResource Card}"
+                            Margin="4,8,4,4"
+                            Padding="10">
+                        <TextBlock Style="{StaticResource Muted}"
+                                   Text="EVO sólo quita paquetes catalogados y nunca toca la lista protegida (Store, runtime VCLibs/UI.Xaml/.NET, identidad AAD, Defender/SecHealthUI, Shell/StartMenu, Game Bar provider, Xbox services). El quite es por usuario con Remove-AppxPackage y queda registrado con PackageFullName e InstallLocation para restaurarlo con Add-AppxPackage -Register."/>
+                    </Border>
+
+                    <DataGrid Grid.Row="3"
+                              Style="{StaticResource TweakGrid}"
+                              ItemsSource="{Binding DebloatView}">
+                        <DataGrid.Columns>
+                            <DataGridTemplateColumn Header="ESTADO" Width="190">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <Border Background="{Binding StateColor}"
+                                                CornerRadius="8"
+                                                Padding="7,3"
+                                                Margin="3"
+                                                HorizontalAlignment="Left">
+                                            <TextBlock Text="{Binding StateLabel}"
+                                                       Foreground="White"
+                                                       FontSize="10"
+                                                       FontWeight="Bold"/>
+                                        </Border>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+                            <DataGridTextColumn Header="APLICACIÓN" Binding="{Binding Name}" Width="220"/>
+                            <DataGridTextColumn Header="PAQUETE DETECTADO" Binding="{Binding PackageLabel}" Width="330"/>
+                            <DataGridTextColumn Header="VERSIÓN" Binding="{Binding VersionLabel}" Width="120"/>
+                            <DataGridTextColumn Header="POR QUÉ" Binding="{Binding Reason}" Width="320"/>
+                            <DataGridTextColumn Header="BENEFICIO" Binding="{Binding Benefit}" Width="250"/>
+                            <DataGridTextColumn Header="RIESGO" Binding="{Binding RiskLabel}" Width="110"/>
+                            <DataGridTextColumn Header="REINSTALACIÓN" Binding="{Binding ReinstallHint}" Width="300"/>
+                            <DataGridTextColumn Header="ESCANEADO" Binding="{Binding ScannedAtLabel}" Width="150"/>
+                            <DataGridTemplateColumn Header="ACCIÓN" Width="190">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <StackPanel Orientation="Horizontal">
+                                            <Button Style="{StaticResource SmallButton}"
+                                                    Content="QUITAR"
+                                                    Tag="{Binding Id}"
+                                                    IsEnabled="{Binding CanRemove}"
+                                                    Click="DebloatRemove_Click"/>
+                                            <Button Style="{StaticResource SmallButton}"
+                                                    Content="RESTAURAR"
+                                                    Background="#1F6FEB"
+                                                    Tag="{Binding Id}"
+                                                    IsEnabled="{Binding CanRestore}"
+                                                    Click="DebloatRestore_Click"/>
+                                        </StackPanel>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </Grid>
+            </TabItem>
+        </TabControl>
+    </Grid>
+</UserControl>

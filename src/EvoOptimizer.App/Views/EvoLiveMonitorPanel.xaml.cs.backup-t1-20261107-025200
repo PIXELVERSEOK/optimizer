@@ -1,0 +1,68 @@
+using System;
+using System.Threading.Tasks;
+using System.Windows;
+using System.Windows.Controls;
+using EvoOptimizer.App.ViewModels;
+
+namespace EvoOptimizer.App.Views;
+
+public partial class EvoLiveMonitorPanel : UserControl
+{
+    private bool _operationInProgress;
+
+    public EvoLiveMonitorPanel()
+    {
+        InitializeComponent();
+    }
+
+    private async void StartMonitoring_Click(
+        object sender, RoutedEventArgs e)
+    {
+        await ExecuteMonitorOperationAsync(
+            async vm => await vm.StartAsync(),
+            "EVO - Error iniciando monitor");
+    }
+
+    private async void StopMonitoring_Click(
+        object sender, RoutedEventArgs e)
+    {
+        await ExecuteMonitorOperationAsync(
+            async vm => await vm.StopAsync(),
+            "EVO - Error deteniendo monitor");
+    }
+
+    private async Task ExecuteMonitorOperationAsync(
+        Func<EvoControlCenterViewModel, Task> operation,
+        string errorTitle)
+    {
+        if (_operationInProgress)
+            return;
+
+        if (DataContext is not EvoControlCenterViewModel vm)
+            return;
+
+        _operationInProgress = true;
+
+        try
+        {
+            await operation(vm);
+        }
+        catch (OperationCanceledException)
+        {
+            // La cancelación solicitada no es un error de interfaz.
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(
+                Window.GetWindow(this),
+                ex.Message,
+                errorTitle,
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+        }
+        finally
+        {
+            _operationInProgress = false;
+        }
+    }
+}

@@ -15,7 +15,7 @@
             <Setter Property="BorderBrush" Value="#30363D"/>
             <Setter Property="BorderThickness" Value="1"/>
             <Setter Property="CornerRadius" Value="10"/>
-            <Setter Property="Padding" Value="18"/>
+            <Setter Property="Padding" Value="16"/>
             <Setter Property="Margin" Value="5"/>
         </Style>
 
@@ -26,45 +26,47 @@
         </Style>
 
         <Style x:Key="MetricValue" TargetType="TextBlock">
-            <Setter Property="FontSize" Value="27"/>
+            <Setter Property="FontSize" Value="25"/>
             <Setter Property="FontWeight" Value="Bold"/>
-            <Setter Property="Margin" Value="0,9,0,4"/>
+            <Setter Property="Margin" Value="0,7,0,4"/>
         </Style>
 
         <Style TargetType="ProgressBar">
-            <Setter Property="Height" Value="7"/>
+            <Setter Property="Height" Value="6"/>
             <Setter Property="Background" Value="#30363D"/>
             <Setter Property="Foreground" Value="#2F81F7"/>
             <Setter Property="BorderThickness" Value="0"/>
         </Style>
 
         <Style TargetType="Button">
-            <Setter Property="Padding" Value="16,9"/>
+            <Setter Property="Padding" Value="14,8"/>
             <Setter Property="Margin" Value="4"/>
             <Setter Property="Foreground" Value="White"/>
             <Setter Property="Background" Value="#238636"/>
             <Setter Property="BorderThickness" Value="0"/>
             <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
         </Style>
     </UserControl.Resources>
 
     <ScrollViewer VerticalScrollBarVisibility="Auto">
-        <StackPanel Margin="22">
+        <StackPanel Margin="20">
 
-            <DockPanel Margin="0,0,0,18">
+            <!-- Cabecera -->
+            <DockPanel Margin="0,0,0,16">
                 <StackPanel>
                     <TextBlock Text="EVO LIVE MONITOR"
-                               FontSize="23"
+                               FontSize="22"
                                FontWeight="Bold"/>
-                    <TextBlock Text="Telemetría y diagnóstico adaptativo"
+                    <TextBlock Text="Telemetría en tiempo real, optimización adaptativa y benchmark A/B"
                                Foreground="#8B949E"
-                               Margin="0,4,0,0"/>
+                               Margin="0,3,0,0"/>
                 </StackPanel>
 
                 <StackPanel DockPanel.Dock="Right"
                             Orientation="Horizontal"
                             HorizontalAlignment="Right">
-                    <Button Content="INICIAR"
+                    <Button Content="INICIAR MONITOR"
                             Click="StartMonitoring_Click"/>
                     <Button Content="DETENER"
                             Background="#9E3A38"
@@ -72,32 +74,77 @@
                 </StackPanel>
             </DockPanel>
 
+            <!-- Banner de Hardware Objetivo y Topología -->
             <Border Background="#161B22"
                     BorderBrush="#30363D"
                     BorderThickness="1"
                     CornerRadius="9"
                     Padding="14"
-                    Margin="0,0,0,14">
-                <DockPanel>
-                    <TextBlock Text="ESTADO DEL SISTEMA"
-                               Foreground="#8B949E"
-                               FontWeight="SemiBold"
-                               VerticalAlignment="Center"/>
-                    <StackPanel DockPanel.Dock="Right"
-                                Orientation="Horizontal">
-                        <TextBlock Text="{Binding SystemHealth, Mode=OneWay}"
-                                   FontWeight="Bold"
-                                   Foreground="#3FB950"
-                                   Margin="0,0,18,0"/>
-                        <TextBlock Text="{Binding MonitorStatus, Mode=OneWay}"
+                    Margin="0,0,0,10">
+                <StackPanel>
+                    <DockPanel>
+                        <TextBlock Text="INTELIGENCIA DE HARDWARE"
                                    Foreground="#58A6FF"
-                                   FontWeight="SemiBold"/>
-                    </StackPanel>
-                </DockPanel>
+                                   FontWeight="Bold"
+                                   FontSize="12"/>
+                        <TextBlock Text="{Binding TopologySummary, Mode=OneWay}"
+                                   DockPanel.Dock="Right"
+                                   Foreground="#E6EDF3"
+                                   FontWeight="SemiBold"
+                                   FontSize="12"/>
+                    </DockPanel>
+                    <TextBlock Text="{Binding GamingConfigSummary, Mode=OneWay}"
+                               Foreground="#8B949E"
+                               FontSize="11"
+                               Margin="0,4,0,0"/>
+                </StackPanel>
             </Border>
 
-            <UniformGrid Columns="2" Rows="2">
+            <!-- Barra de estado y Cuello de botella -->
+            <Border Background="#161B22"
+                    BorderBrush="#30363D"
+                    BorderThickness="1"
+                    CornerRadius="9"
+                    Padding="14"
+                    Margin="0,0,0,12">
+                <StackPanel>
+                    <DockPanel Margin="0,0,0,6">
+                        <TextBlock Text="ESTADO DEL SISTEMA"
+                                   Foreground="#8B949E"
+                                   FontWeight="SemiBold"
+                                   VerticalAlignment="Center"/>
+                        <StackPanel DockPanel.Dock="Right"
+                                    Orientation="Horizontal">
+                            <TextBlock Text="{Binding SystemHealth, Mode=OneWay}"
+                                       FontWeight="Bold"
+                                       Foreground="#3FB950"
+                                       Margin="0,0,16,0"/>
+                            <TextBlock Text="{Binding MonitorStatus, Mode=OneWay}"
+                                       Foreground="#58A6FF"
+                                       FontWeight="SemiBold"/>
+                        </StackPanel>
+                    </DockPanel>
 
+                    <Separator Background="#30363D" Margin="0,4,0,8"/>
+
+                    <DockPanel>
+                        <TextBlock Text="CUELLO DE BOTELLA IDENTIFICADO"
+                                   Foreground="#D29922"
+                                   FontWeight="SemiBold"
+                                   FontSize="12"/>
+                        <TextBlock Text="{Binding PrimaryBottleneckText, Mode=OneWay}"
+                                   DockPanel.Dock="Right"
+                                   Foreground="#F0883E"
+                                   FontWeight="Bold"
+                                   FontSize="12"/>
+                    </DockPanel>
+                </StackPanel>
+            </Border>
+
+            <!-- Métricas en cuadrícula 3x2 -->
+            <UniformGrid Columns="3" Rows="2">
+
+                <!-- CPU Sistema -->
                 <Border Style="{StaticResource MetricCard}">
                     <StackPanel>
                         <TextBlock Text="CPU DEL SISTEMA"
@@ -106,86 +153,557 @@
                                    Style="{StaticResource MetricValue}"/>
                         <ProgressBar Value="{Binding SystemCpuPercent, Mode=OneWay}"
                                      Maximum="100"/>
+                        <TextBlock Text="Total procesadores lógicos"
+                                   Foreground="#8B949E"
+                                   FontSize="10"
+                                   Margin="0,6,0,0"/>
                     </StackPanel>
                 </Border>
 
+                <!-- CPU CS2 -->
                 <Border Style="{StaticResource MetricCard}">
                     <StackPanel>
                         <TextBlock Text="CPU DE CS2"
                                    Style="{StaticResource MetricTitle}"/>
-                        <TextBlock Text="{Binding Cs2CpuPercent, StringFormat={}{0:F1}%, Mode=OneWay}"
+                        <TextBlock Text="{Binding Cs2CpuPercent, StringFormat={}{0:F1}%, Mode=OneWay, TargetNullValue='No en ejecución'}"
                                    Style="{StaticResource MetricValue}"/>
-                        <TextBlock Text="Consumo normalizado entre procesadores lógicos"
+                        <TextBlock Text="{Binding Cs2ProcessCount, StringFormat={}Instancias CS2: {0}, Mode=OneWay}"
                                    Foreground="#8B949E"
                                    FontSize="10"
-                                   TextWrapping="Wrap"/>
+                                   Margin="0,4,0,0"/>
                     </StackPanel>
                 </Border>
 
+                <!-- GPU Intel UHD -->
                 <Border Style="{StaticResource MetricCard}">
                     <StackPanel>
-                        <TextBlock Text="MEMORIA RAM"
+                        <TextBlock Text="GPU (INTEL UHD 3D)"
+                                   Style="{StaticResource MetricTitle}"/>
+                        <TextBlock Text="{Binding GpuUsagePercent, Mode=OneWay, StringFormat={}{0:F1}%, TargetNullValue='0.0%'}"
+                                   Style="{StaticResource MetricValue}"/>
+                        <ProgressBar Value="{Binding GpuUsagePercent, Mode=OneWay, TargetNullValue=0}"
+                                     Maximum="100"/>
+                        <TextBlock Text="{Binding GpuSharedMemoryMb, StringFormat={}VRAM Compartida: {0:F0} MB, Mode=OneWay, TargetNullValue='VRAM Dinámica'}"
+                                   Foreground="#8B949E"
+                                   FontSize="10"
+                                   Margin="0,6,0,0"/>
+                    </StackPanel>
+                </Border>
+
+                <!-- RAM Física -->
+                <Border Style="{StaticResource MetricCard}">
+                    <StackPanel>
+                        <TextBlock Text="MEMORIA RAM FÍSICA"
                                    Style="{StaticResource MetricTitle}"/>
                         <TextBlock Text="{Binding MemoryUsagePercent, StringFormat={}{0:F1}%, Mode=OneWay}"
                                    Style="{StaticResource MetricValue}"/>
                         <ProgressBar Value="{Binding MemoryUsagePercent, Mode=OneWay}"
                                      Maximum="100"/>
-                        <TextBlock Text="{Binding AvailableMemoryMb, StringFormat={}{0:F0} MB disponibles, Mode=OneWay}"
+                        <TextBlock Text="{Binding AvailableMemoryMb, StringFormat={}{0:F0} MB libres, Mode=OneWay}"
                                    Foreground="#8B949E"
-                                   Margin="0,7,0,0"/>
+                                   FontSize="10"
+                                   Margin="0,6,0,0"/>
                     </StackPanel>
                 </Border>
 
+                <!-- Commit y Paginación -->
                 <Border Style="{StaticResource MetricCard}">
                     <StackPanel>
-                        <TextBlock Text="MEMORIA DE CS2"
+                        <TextBlock Text="MEMORIA COMPROMETIDA (COMMIT)"
                                    Style="{StaticResource MetricTitle}"/>
-                        <TextBlock Text="{Binding Cs2MemoryMb, StringFormat={}{0:F0} MB, Mode=OneWay}"
+                        <TextBlock Text="{Binding CommitUsedMb, StringFormat={}{0:F0} MB, Mode=OneWay}"
                                    Style="{StaticResource MetricValue}"/>
-                        <TextBlock Text="{Binding Cs2ProcessCount, StringFormat={}Procesos CS2: {0}, Mode=OneWay}"
-                                   Foreground="#8B949E"/>
+                        <TextBlock Text="{Binding CommitLimitMb, StringFormat={}Límite Commit: {0:F0} MB, Mode=OneWay}"
+                                   Foreground="#8B949E"
+                                   FontSize="10"
+                                   Margin="0,4,0,0"/>
+                    </StackPanel>
+                </Border>
+
+                <!-- Memoria CS2 -->
+                <Border Style="{StaticResource MetricCard}">
+                    <StackPanel>
+                        <TextBlock Text="WORKING SET CS2"
+                                   Style="{StaticResource MetricTitle}"/>
+                        <TextBlock Text="{Binding Cs2MemoryMb, StringFormat={}{0:F0} MB, Mode=OneWay, TargetNullValue='0 MB'}"
+                                   Style="{StaticResource MetricValue}"/>
+                        <TextBlock Text="Memoria física dedicada a cs2.exe"
+                                   Foreground="#8B949E"
+                                   FontSize="10"
+                                   Margin="0,4,0,0"/>
                     </StackPanel>
                 </Border>
 
             </UniformGrid>
 
-            <Border Style="{StaticResource MetricCard}"
-                    Margin="5,12,5,5">
+            <!-- OPTIMIZACIONES ADAPTATIVAS DE CPU (CS2) -->
+            <TextBlock Text="OPTIMIZACIÓN ADAPTATIVA DE CS2 (CPU SETS Y PRIORIDAD)"
+                       FontSize="15"
+                       FontWeight="Bold"
+                       Margin="5,16,5,6"/>
+
+            <Border Background="#161B22"
+                    BorderBrush="#30363D"
+                    BorderThickness="1"
+                    CornerRadius="9"
+                    Padding="14"
+                    Margin="5">
                 <StackPanel>
-                    <TextBlock Text="ACTIVIDAD DEL SISTEMA"
-                               FontSize="15"
+                    <DockPanel Margin="0,0,0,10">
+                        <StackPanel>
+                            <TextBlock Text="{Binding PriorityStatusText, Mode=OneWay}"
+                                       FontWeight="SemiBold"
+                                       Foreground="#58A6FF"/>
+                            <TextBlock Text="{Binding AffinityStatusText, Mode=OneWay}"
+                                       FontWeight="SemiBold"
+                                       Foreground="#3FB950"
+                                       Margin="0,3,0,0"/>
+                        </StackPanel>
+                        <Button DockPanel.Dock="Right"
+                                Content="REVERTIR TODO"
+                                Background="#9E3A38"
+                                HorizontalAlignment="Right"
+                                VerticalAlignment="Center"
+                                Click="RollbackAll_Click"/>
+                    </DockPanel>
+
+                    <TextBlock Text="Ajustes de una sola variable para aislar causalidad (seguro, sin elevación innecesaria, nunca Realtime):"
+                               Foreground="#8B949E"
+                               FontSize="11"
+                               Margin="0,0,0,8"/>
+
+                    <WrapPanel>
+                        <Button Content="PRIORIDAD ABOVENORMAL"
+                                Background="#1F6FEB"
+                                Click="ApplyPriority_Click"/>
+                        <Button Content="{Binding PcoresButtonContent, Mode=OneWay}"
+                                Background="#8957E5"
+                                ToolTip="Asigna CS2 exclusivamente a los núcleos de alto rendimiento para eliminar microcongelamientos causados por E-Cores."
+                                Click="ApplyPcores_Click"/>
+                        <Button Content="{Binding BalancedButtonContent, Mode=OneWay}"
+                                Background="#388BFD"
+                                ToolTip="Asigna CS2 a los P-Cores y a 2 E-Cores auxiliares para balance de hilos secundarios."
+                                Click="ApplyBalanced_Click"/>
+                    </WrapPanel>
+                </StackPanel>
+            </Border>
+
+            <!-- LABORATORIO DE EXPERIMENTACIÓN A/B (CS2) -->
+            <TextBlock Text="MOTOR DE EXPERIMENTACIÓN Y BENCHMARK A/B"
+                       FontSize="15"
+                       FontWeight="Bold"
+                       Margin="5,16,5,6"/>
+
+            <Border Background="#161B22"
+                    BorderBrush="#30363D"
+                    BorderThickness="1"
+                    CornerRadius="9"
+                    Padding="14"
+                    Margin="5">
+                <StackPanel>
+                    <DockPanel Margin="0,0,0,10">
+                        <StackPanel>
+                            <TextBlock Text="{Binding BenchmarkStatusText, Mode=OneWay}"
+                                       FontWeight="SemiBold"
+                                       Foreground="#D29922"/>
+                            <TextBlock Text="{Binding ExperimentVerdictText, Mode=OneWay}"
+                                       FontWeight="Bold"
+                                       Foreground="#58A6FF"
+                                       FontSize="13"
+                                       Margin="0,3,0,0"/>
+                        </StackPanel>
+
+                        <StackPanel DockPanel.Dock="Right"
+                                    Orientation="Horizontal"
+                                    HorizontalAlignment="Right">
+                            <Button Content="1. CAPTURAR LÍNEA BASE (A)"
+                                    Background="#238636"
+                                    IsEnabled="{Binding CanRunBenchmark, Mode=OneWay}"
+                                    Click="CaptureBaseline_Click"/>
+                            <Button Content="2. CAPTURAR CANDIDATO (B)"
+                                    Background="#1F6FEB"
+                                    IsEnabled="{Binding CanRunBenchmark, Mode=OneWay}"
+                                    Click="CaptureCandidate_Click"/>
+                        </StackPanel>
+                    </DockPanel>
+
+                    <!-- Resultados de la comparación A/B -->
+                    <Border Background="#0D1117"
+                            BorderBrush="#30363D"
+                            BorderThickness="1"
+                            CornerRadius="6"
+                            Padding="12"
+                            Margin="0,4,0,0">
+                        <StackPanel>
+                            <DockPanel Margin="0,0,0,4">
+                                <TextBlock Text="{Binding BaselineMetricsText, Mode=OneWay}"
+                                           Foreground="#8B949E"
+                                           FontSize="12"/>
+                            </DockPanel>
+                            <DockPanel Margin="0,0,0,6">
+                                <TextBlock Text="{Binding CandidateMetricsText, Mode=OneWay}"
+                                           Foreground="#8B949E"
+                                           FontSize="12"/>
+                            </DockPanel>
+
+                            <Separator Background="#30363D" Margin="0,2,0,8"/>
+
+                            <TextBlock Text="{Binding ComparisonResultText, Mode=OneWay}"
+                                       FontWeight="Bold"
+                                       Foreground="#3FB950"
+                                       FontSize="13"
+                                       Margin="0,0,0,4"/>
+                            <TextBlock Text="{Binding ComparisonExplanation, Mode=OneWay}"
+                                       Foreground="#E6EDF3"
+                                       TextWrapping="Wrap"
+                                       FontSize="11"/>
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
+            </Border>
+
+            <!-- OPTIMIZACIÓN DE WINDOWS (CAMBIOS REVERSIBLES) -->
+            <TextBlock Text="OPTIMIZACIÓN DE WINDOWS (CAMBIOS REVERSIBLES)"
+                       FontSize="15"
+                       FontWeight="Bold"
+                       Margin="5,16,5,6"/>
+
+            <Border Background="#161B22"
+                    BorderBrush="#30363D"
+                    BorderThickness="1"
+                    CornerRadius="9"
+                    Padding="14"
+                    Margin="5">
+                <StackPanel>
+                    <TextBlock Text="{Binding WindowsOptimizationStatusText, Mode=OneWay}"
+                               Foreground="#D29922"
+                               FontWeight="SemiBold"
+                               TextWrapping="Wrap"
+                               Margin="0,0,0,10"/>
+
+                    <ItemsControl ItemsSource="{Binding WindowsOptimizationItems, Mode=OneWay}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Border Background="#0D1117"
+                                        BorderBrush="#30363D"
+                                        BorderThickness="1"
+                                        CornerRadius="6"
+                                        Padding="12"
+                                        Margin="0,0,0,8">
+                                    <StackPanel>
+                                        <DockPanel>
+                                            <TextBlock Text="{Binding Title, Mode=OneWay}"
+                                                       FontWeight="Bold"
+                                                       FontSize="13"/>
+                                            <TextBlock Text="{Binding RiskLabel, Mode=OneWay}"
+                                                       DockPanel.Dock="Right"
+                                                       Foreground="#D29922"
+                                                       FontSize="11"/>
+                                        </DockPanel>
+
+                                        <TextBlock FontSize="11"
+                                                   Foreground="#8B949E"
+                                                   TextWrapping="Wrap"
+                                                   Margin="0,5,0,0">
+                                            <Run Text="Estado actual: "/>
+                                            <Run Text="{Binding CurrentState, Mode=OneWay}"/>
+                                        </TextBlock>
+
+                                        <TextBlock FontSize="11"
+                                                   Foreground="#58A6FF"
+                                                   TextWrapping="Wrap"
+                                                   Margin="0,2,0,0">
+                                            <Run Text="Cambio propuesto: "/>
+                                            <Run Text="{Binding ProposedState, Mode=OneWay}"/>
+                                        </TextBlock>
+
+                                        <TextBlock FontSize="11"
+                                                   Foreground="#3FB950"
+                                                   TextWrapping="Wrap"
+                                                   Margin="0,2,0,0">
+                                            <Run Text="Beneficio esperado: "/>
+                                            <Run Text="{Binding ExpectedBenefit, Mode=OneWay}"/>
+                                        </TextBlock>
+
+                                        <TextBlock FontSize="11"
+                                                   Foreground="#D29922"
+                                                   TextWrapping="Wrap"
+                                                   Margin="0,2,0,0">
+                                            <Run Text="Riesgo: "/>
+                                            <Run Text="{Binding Risk, Mode=OneWay}"/>
+                                        </TextBlock>
+
+                                        <DockPanel Margin="0,8,0,0">
+                                            <TextBlock Text="{Binding BlockedReason, Mode=OneWay}"
+                                                       Foreground="#8B949E"
+                                                       FontSize="11"
+                                                       TextWrapping="Wrap"
+                                                       VerticalAlignment="Center"/>
+                                            <StackPanel DockPanel.Dock="Right"
+                                                        Orientation="Horizontal">
+                                                <Button Content="MEDIR LÍNEA BASE"
+                                                        Background="#1F6FEB"
+                                                        Tag="{Binding Target, Mode=OneWay}"
+                                                        IsEnabled="{Binding DataContext.CanMeasureWindows, RelativeSource={RelativeSource AncestorType=UserControl}, Mode=OneWay}"
+                                                        Click="CaptureWindowsBaseline_Click"/>
+                                                <Button Content="APLICAR (PIDE CONFIRMACIÓN)"
+                                                        Background="#238636"
+                                                        Tag="{Binding Target, Mode=OneWay}"
+                                                        IsEnabled="{Binding CanApply, Mode=OneWay}"
+                                                        Click="ApplyWindowsOptimization_Click"/>
+                                            </StackPanel>
+                                        </DockPanel>
+                                    </StackPanel>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+
+                    <!-- Aplicaciones de inicio (sólo HKCU, una por vez) -->
+                    <TextBlock Text="APLICACIONES DE INICIO DEL USUARIO"
+                               FontSize="13"
                                FontWeight="Bold"
-                               Margin="0,0,0,12"/>
+                               Margin="0,8,0,6"/>
 
-                    <DockPanel Margin="0,4">
-                        <TextBlock Text="Procesos activos"
-                                   Foreground="#8B949E"/>
-                        <TextBlock Text="{Binding ActiveProcessCount, Mode=OneWay}"
-                                   DockPanel.Dock="Right"
-                                   FontWeight="Bold"/>
+                    <ItemsControl ItemsSource="{Binding StartupCandidates, Mode=OneWay}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Border Background="#0D1117"
+                                        BorderBrush="#30363D"
+                                        BorderThickness="1"
+                                        CornerRadius="6"
+                                        Padding="10"
+                                        Margin="0,0,0,6">
+                                    <DockPanel>
+                                        <StackPanel>
+                                            <TextBlock Text="{Binding Name, Mode=OneWay}"
+                                                       FontWeight="SemiBold"
+                                                       FontSize="12"/>
+                                            <TextBlock Text="{Binding Command, Mode=OneWay}"
+                                                       Foreground="#8B949E"
+                                                       FontSize="10"
+                                                       TextWrapping="Wrap"/>
+                                            <TextBlock Text="{Binding Recommendation, Mode=OneWay}"
+                                                       Foreground="#58A6FF"
+                                                       FontSize="10"
+                                                       TextWrapping="Wrap"
+                                                       Margin="0,2,0,0"/>
+                                        </StackPanel>
+                                        <StackPanel DockPanel.Dock="Right"
+                                                    Orientation="Horizontal"
+                                                    VerticalAlignment="Center">
+                                            <Button Content="MEDIR LÍNEA BASE"
+                                                    Background="#1F6FEB"
+                                                    Tag="{Binding Name, Mode=OneWay}"
+                                                    IsEnabled="{Binding DataContext.CanMeasureWindows, RelativeSource={RelativeSource AncestorType=UserControl}, Mode=OneWay}"
+                                                    Click="CaptureStartupBaseline_Click"/>
+                                            <Button Content="DESACTIVAR (PIDE CONFIRMACIÓN)"
+                                                    Background="#238636"
+                                                    Tag="{Binding Name, Mode=OneWay}"
+                                                    Click="DisableStartupApp_Click"/>
+                                        </StackPanel>
+                                    </DockPanel>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+
+                    <TextBlock Text="Sin aplicaciones de inicio detectadas en HKCU."
+                               Foreground="#8B949E"
+                               FontSize="11"
+                               Margin="0,4,0,0">
+                        <TextBlock.Style>
+                            <Style TargetType="{x:Type TextBlock}">
+                                <Setter Property="Visibility" Value="Collapsed"/>
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding StartupCandidates.Count, Mode=OneWay}" Value="0">
+                                        <Setter Property="Visibility" Value="Visible"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
+
+                    <Separator Background="#30363D" Margin="0,10,0,8"/>
+
+                    <!-- Cambios activos y rollback -->
+                    <DockPanel Margin="0,0,0,6">
+                        <TextBlock Text="CAMBIOS ACTIVOS (REVERSIBLES)"
+                                   FontSize="13"
+                                   FontWeight="Bold"
+                                   VerticalAlignment="Center"/>
+                        <Button Content="REVERTIR TODOS LOS CAMBIOS DE WINDOWS"
+                                DockPanel.Dock="Right"
+                                Background="#DA3633"
+                                HorizontalAlignment="Right"
+                                IsEnabled="{Binding HasActiveWindowsChanges, Mode=OneWay}"
+                                Click="RollbackAllWindowsChanges_Click"/>
                     </DockPanel>
 
-                    <DockPanel Margin="0,4">
-                        <TextBlock Text="Procesos de CS2"
-                                   Foreground="#8B949E"/>
-                        <TextBlock Text="{Binding Cs2ProcessCount, Mode=OneWay}"
-                                   DockPanel.Dock="Right"
-                                   FontWeight="Bold"/>
-                    </DockPanel>
+                    <ItemsControl ItemsSource="{Binding WindowsChanges, Mode=OneWay}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Border Background="#0D1117"
+                                        BorderBrush="#30363D"
+                                        BorderThickness="1"
+                                        CornerRadius="6"
+                                        Padding="10"
+                                        Margin="0,0,0,6">
+                                    <DockPanel>
+                                        <StackPanel>
+                                            <TextBlock Text="{Binding SettingKey, Mode=OneWay}"
+                                                       FontSize="11"
+                                                       Foreground="#E6EDF3"
+                                                       TextWrapping="Wrap"/>
+                                            <TextBlock Text="{Binding CreatedAt, StringFormat={}Aplicado: {0:yyyy-MM-dd HH:mm}, Mode=OneWay}"
+                                                       FontSize="10"
+                                                       Foreground="#8B949E"/>
+                                            <TextBlock Text="{Binding StatusLabel, Mode=OneWay}"
+                                                       FontSize="11"
+                                                       FontWeight="Bold"
+                                                       Foreground="#58A6FF"
+                                                       TextWrapping="Wrap"
+                                                       Margin="0,3,0,0"/>
+                                            <TextBlock Text="{Binding EvidenceSummary, Mode=OneWay}"
+                                                       FontSize="10"
+                                                       Foreground="#8B949E"
+                                                       TextWrapping="Wrap"/>
+                                            <TextBlock Text="{Binding DecisionLabel, Mode=OneWay}"
+                                                       FontSize="10"
+                                                       Foreground="#D29922"
+                                                       TextWrapping="Wrap"/>
+                                        </StackPanel>
+                                        <StackPanel DockPanel.Dock="Right"
+                                                    Orientation="Horizontal"
+                                                    VerticalAlignment="Center">
+                                            <Button Content="MEDIR POSTERIOR"
+                                                    Background="#1F6FEB"
+                                                    Tag="{Binding Id, Mode=OneWay}"
+                                                    IsEnabled="{Binding DataContext.CanMeasureWindows, RelativeSource={RelativeSource AncestorType=UserControl}, Mode=OneWay}"
+                                                    Click="EvaluateWindowsMeasurement_Click"/>
+                                            <Button Content="REVERTIR"
+                                                    Background="#DA3633"
+                                                    Tag="{Binding Id, Mode=OneWay}"
+                                                    Click="RollbackWindowsChange_Click"/>
+                                        </StackPanel>
+                                    </DockPanel>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
 
-                    <DockPanel Margin="0,4">
-                        <TextBlock Text="Última actualización"
-                                   Foreground="#8B949E"/>
-                        <TextBlock Text="{Binding LastUpdated, StringFormat={}{0:HH:mm:ss}, Mode=OneWay}"
-                                   DockPanel.Dock="Right"/>
+                    <!-- Panel de evidencia obligatoria -->
+                    <Border Background="#0D1117"
+                            BorderBrush="#1F6FEB"
+                            BorderThickness="1"
+                            CornerRadius="6"
+                            Padding="10"
+                            Margin="0,8,0,0">
+                        <StackPanel>
+                            <TextBlock Text="MEDICIÓN OBLIGATORIA · ANTES / DESPUÉS"
+                                       FontSize="12"
+                                       FontWeight="Bold"
+                                       Foreground="#58A6FF"/>
+                            <TextBlock Text="{Binding WindowsMeasurementStatusText, Mode=OneWay}"
+                                       Foreground="#D29922"
+                                       FontSize="11"
+                                       FontWeight="SemiBold"
+                                       TextWrapping="Wrap"
+                                       Margin="0,4,0,4"/>
+                            <TextBlock Text="{Binding WindowsEvidenceText, Mode=OneWay}"
+                                       Foreground="#E6EDF3"
+                                       FontFamily="Consolas"
+                                       FontSize="10"
+                                       TextWrapping="Wrap"/>
+                        </StackPanel>
+                    </Border>
+
+                    <TextBlock Text="No hay cambios de Windows activos. Todos los ajustes están en su estado original."
+                               Foreground="#8B949E"
+                               FontSize="11"
+                               TextWrapping="Wrap"
+                               Margin="0,4,0,0">
+                        <TextBlock.Style>
+                            <Style TargetType="{x:Type TextBlock}">
+                                <Setter Property="Visibility" Value="Collapsed"/>
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding HasActiveWindowsChanges, Mode=OneWay}" Value="False">
+                                        <Setter Property="Visibility" Value="Visible"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
+                </StackPanel>
+            </Border>
+
+            <!-- Actividad de procesos y Competidores -->
+            <Border Style="{StaticResource MetricCard}"
+                    Margin="5,10,5,5">
+                <StackPanel>
+                    <TextBlock Text="PROCESOS COMPETIDORES EN TIEMPO REAL"
+                               FontSize="14"
+                               FontWeight="Bold"
+                               Margin="0,0,0,10"/>
+
+                    <ItemsControl ItemsSource="{Binding TopProcesses, Mode=OneWay}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <DockPanel Margin="0,3">
+                                    <TextBlock Text="{Binding Name, Mode=OneWay}"
+                                               FontWeight="SemiBold"
+                                               Foreground="#E6EDF3"/>
+                                    <TextBlock Text="{Binding ProcessId, StringFormat={} (PID: {0}), Mode=OneWay}"
+                                               Foreground="#8B949E"
+                                               FontSize="11"/>
+                                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                                        <TextBlock Text="{Binding CpuPercent, StringFormat={}{0:F1}% CPU, Mode=OneWay}"
+                                                   Foreground="#58A6FF"
+                                                   FontWeight="SemiBold"
+                                                   Margin="0,0,12,0"/>
+                                        <TextBlock Text="{Binding MemoryMb, StringFormat={}{0:F0} MB RAM, Mode=OneWay}"
+                                                   Foreground="#8B949E"/>
+                                    </StackPanel>
+                                </DockPanel>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+
+                    <TextBlock Text="Sin competidores detectados (CPU en carga normal)."
+                               Foreground="#8B949E"
+                               FontSize="11"
+                               Margin="0,4,0,0">
+                        <TextBlock.Style>
+                            <Style TargetType="{x:Type TextBlock}">
+                                <Setter Property="Visibility" Value="Collapsed"/>
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding TopProcesses.Count, Mode=OneWay}" Value="0">
+                                        <Setter Property="Visibility" Value="Visible"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
+
+                    <Separator Background="#30363D" Margin="0,10,0,8"/>
+
+                    <DockPanel>
+                        <TextBlock Text="{Binding ActiveProcessCount, StringFormat={}Total procesos activos: {0}, Mode=OneWay}"
+                                   Foreground="#8B949E"
+                                   FontSize="11"/>
+                        <TextBlock Text="{Binding LastUpdated, StringFormat={}Actualizado: {0:HH:mm:ss}, Mode=OneWay}"
+                                   DockPanel.Dock="Right"
+                                   Foreground="#8B949E"
+                                   FontSize="11"/>
                     </DockPanel>
                 </StackPanel>
             </Border>
 
+            <!-- Anomalías detectadas -->
             <TextBlock Text="ANOMALÍAS DETECTADAS"
-                       FontSize="16"
+                       FontSize="15"
                        FontWeight="Bold"
-                       Margin="5,20,5,8"/>
+                       Margin="5,16,5,6"/>
 
             <Border Background="#161B22"
                     BorderBrush="#30363D"
@@ -213,6 +731,11 @@
                                                    FontSize="11"
                                                    TextWrapping="Wrap"
                                                    Margin="0,4,0,0"/>
+                                        <TextBlock Text="{Binding Recommendation, Mode=OneWay}"
+                                                   Foreground="#58A6FF"
+                                                   FontSize="11"
+                                                   TextWrapping="Wrap"
+                                                   Margin="0,2,0,0"/>
                                     </StackPanel>
                                 </Border>
                             </DataTemplate>
@@ -237,10 +760,81 @@
                 </StackPanel>
             </Border>
 
-            <TextBlock Text="ALERTAS DEL SISTEMA"
-                       FontSize="16"
+            <!-- Recomendaciones adaptativas del motor Core -->
+            <TextBlock Text="DECISIONES ADAPTATIVAS BASADAS EN EVIDENCIA"
+                       FontSize="15"
                        FontWeight="Bold"
-                       Margin="5,20,5,8"/>
+                       Margin="5,16,5,6"/>
+
+            <Border Background="#161B22"
+                    BorderBrush="#30363D"
+                    BorderThickness="1"
+                    CornerRadius="9"
+                    Padding="12"
+                    Margin="5">
+                <StackPanel>
+                    <ItemsControl ItemsSource="{Binding OptimizationRecommendations, Mode=OneWay}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Border BorderBrush="#30363D"
+                                        BorderThickness="0,0,0,1"
+                                        Padding="10,8">
+                                    <StackPanel>
+                                        <DockPanel>
+                                            <TextBlock Text="{Binding Title, Mode=OneWay}"
+                                                       FontWeight="SemiBold"/>
+                                            <TextBlock DockPanel.Dock="Right"
+                                                       Foreground="#D29922">
+                                                <Run Text="{Binding Priority, Mode=OneWay}"/>
+                                                <Run Text=" · "/>
+                                                <Run Text="{Binding Risk, Mode=OneWay}"/>
+                                            </TextBlock>
+                                        </DockPanel>
+                                        <TextBlock Text="{Binding Explanation, Mode=OneWay}"
+                                                   TextWrapping="Wrap"
+                                                   FontSize="11"
+                                                   Foreground="#8B949E"
+                                                   Margin="0,4,0,0"/>
+                                        <TextBlock FontSize="11"
+                                                   Foreground="#3FB950"
+                                                   Margin="0,3,0,0">
+                                            <Run Text="Confianza: "/>
+                                            <Run Text="{Binding ConfidencePercent, Mode=OneWay, StringFormat={}{0:F0}%}"/>
+                                            <Run Text=" · Reversible: "/>
+                                            <Run Text="{Binding IsReversible, Mode=OneWay}"/>
+                                            <Run Text=" · Requiere aprobación: "/>
+                                            <Run Text="{Binding RequiresUserApproval, Mode=OneWay}"/>
+                                        </TextBlock>
+                                    </StackPanel>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+
+                    <TextBlock Text="Sin decisiones pendientes. Se evalúan señales de anomalías y configuración de Windows."
+                               Foreground="#8B949E"
+                               HorizontalAlignment="Center"
+                               TextWrapping="Wrap"
+                               Margin="8">
+                        <TextBlock.Style>
+                            <Style TargetType="{x:Type TextBlock}">
+                                <Setter Property="Visibility" Value="Collapsed"/>
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding OptimizationRecommendations.Count, Mode=OneWay}" Value="0">
+                                        <Setter Property="Visibility" Value="Visible"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
+                </StackPanel>
+            </Border>
+
+            <!-- Alertas del sistema -->
+            <TextBlock Text="ALERTAS DEL SISTEMA"
+                       FontSize="15"
+                       FontWeight="Bold"
+                       Margin="5,16,5,6"/>
 
             <Border Background="#161B22"
                     BorderBrush="#30363D"

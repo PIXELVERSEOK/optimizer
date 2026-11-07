@@ -1,0 +1,461 @@
+using System.Collections.ObjectModel;
+using System.ComponentModel;
+using System.Runtime.CompilerServices;
+using System.Windows.Threading;
+using EvoOptimizer.Core.Analysis;
+using EvoOptimizer.Core.Hardware;
+using EvoOptimizer.Core.Optimization;
+using EvoOptimizer.Infrastructure.Analysis;
+using EvoOptimizer.Infrastructure.Hardware;
+using EvoOptimizer.Infrastructure.Telemetry;
+
+namespace EvoOptimizer.App.ViewModels;
+
+/// <summary>
+/// ViewModel del Centro de Control. Orquesta el monitor en vivo, la topología híbrida Intel,
+/// el estado de Windows Gaming, el analizador de cuellos de botella y el motor adaptativo.
+/// Todos los setters son privados: los bindings XAML deben usar Mode=OneWay.
+/// </summary>
+public sealed class EvoControlCenterViewModel :
+    INotifyPropertyChanged, IAsyncDisposable
+{
+    private readonly LivePerformanceMonitor _monitor;
+    private readonly LiveAnomalyDetector _anomalyDetector;
+    private readonly AdaptiveOptimizationEngine _optimizationEngine;
+    private readonly HardwareBottleneckAnalyzer _bottleneckAnalyzer;
+    private readonly IntelHybridTopologyProvider _topologyProvider;
+    private readonly WindowsGamingConfigService _gamingConfigService;
+    private readonly Dispatcher _dispatcher;
+
+    private CancellationTokenSource? _cancellation;
+    private Task? _monitorTask;
+    private bool _isMonitoring;
+    private bool _disposed;
+
+    private double _systemCpuPercent;
+    private double? _cs2CpuPercent;
+    private double _memoryUsagePercent;
+    private double _availableMemoryMb;
+    private double _commitUsedMb;
+    private double _commitLimitMb;
+    private double _cs2MemoryMb;
+    private double? _gpuUsagePercent;
+    private double? _gpuSharedMemoryMb;
+    private int _activeProcessCount;
+    private int _cs2ProcessCount;
+    private DateTimeOffset? _lastUpdated;
+    private string _monitorStatus = "DETENIDO";
+    private string _systemHealth = "SIN DATOS";
+    private string _primaryBottleneckText = "SIN EVALUAR";
+    private string _topologySummary = "";
+    private string _gamingConfigSummary = "";
+
+    public event PropertyChangedEventHandler? PropertyChanged;
+
+    // ── Colecciones observables ──────────────────────────────────────────────
+
+    public ObservableCollection<LiveAnomaly> Anomalies { get; } = new();
+
+    public ObservableCollection<string> Alerts { get; } = new();
+
+    public ObservableCollection<AdaptiveOptimizationRecommendation> OptimizationRecommendations { get; } = new();
+
+    public ObservableCollection<ProcessSummary> TopProcesses { get; } = new();
+
+    public ObservableCollection<BottleneckFinding> BottleneckFindings { get; } = new();
+
+    // ── Propiedades de Hardware y Sistema ────────────────────────────────────
+
+    public CpuTopologyInfo Topology { get; }
+
+    public WindowsGamingConfig GamingConfig { get; }
+
+    public string TopologySummary
+    {
+        get => _topologySummary;
+        private set => SetField(ref _topologySummary, value);
+    }
+
+    public string GamingConfigSummary
+    {
+        get => _gamingConfigSummary;
+        private set => SetField(ref _gamingConfigSummary, value);
+    }
+
+    public string PrimaryBottleneckText
+    {
+        get => _primaryBottleneckText;
+        private set => SetField(ref _primaryBottleneckText, value);
+    }
+
+    // ── Métricas en tiempo real ──────────────────────────────────────────────
+
+    public double SystemCpuPercent
+    {
+        get => _systemCpuPercent;
+        private set => SetField(ref _systemCpuPercent, value);
+    }
+
+    public double? Cs2CpuPercent
+    {
+        get => _cs2CpuPercent;
+        private set => SetField(ref _cs2CpuPercent, value);
+    }
+
+    public double MemoryUsagePercent
+    {
+        get => _memoryUsagePercent;
+        private set => SetField(ref _memoryUsagePercent, value);
+    }
+
+    public double AvailableMemoryMb
+    {
+        get => _availableMemoryMb;
+        private set => SetField(ref _availableMemoryMb, value);
+    }
+
+    public double CommitUsedMb
+    {
+        get => _commitUsedMb;
+        private set => SetField(ref _commitUsedMb, value);
+    }
+
+    public double CommitLimitMb
+    {
+        get => _commitLimitMb;
+        private set => SetField(ref _commitLimitMb, value);
+    }
+
+    public double Cs2MemoryMb
+    {
+        get => _cs2MemoryMb;
+        private set => SetField(ref _cs2MemoryMb, value);
+    }
+
+    public double? GpuUsagePercent
+    {
+        get => _gpuUsagePercent;
+        private set => SetField(ref _gpuUsagePercent, value);
+    }
+
+    public double? GpuSharedMemoryMb
+    {
+        get => _gpuSharedMemoryMb;
+        private set => SetField(ref _gpuSharedMemoryMb, value);
+    }
+
+    public int ActiveProcessCount
+    {
+        get => _activeProcessCount;
+        private set => SetField(ref _activeProcessCount, value);
+    }
+
+    public int Cs2ProcessCount
+    {
+        get => _cs2ProcessCount;
+        private set => SetField(ref _cs2ProcessCount, value);
+    }
+
+    public DateTimeOffset? LastUpdated
+    {
+        get => _lastUpdated;
+        private set => SetField(ref _lastUpdated, value);
+    }
+
+    public string MonitorStatus
+    {
+        get => _monitorStatus;
+        private set => SetField(ref _monitorStatus, value);
+    }
+
+    public string SystemHealth
+    {
+        get => _systemHealth;
+        private set => SetField(ref _systemHealth, value);
+    }
+
+    public bool IsMonitoring
+    {
+        get => _isMonitoring;
+        private set
+        {
+            if (SetField(ref _isMonitoring, value))
+                OnPropertyChanged(nameof(CanStart));
+        }
+    }
+
+    public bool CanStart => !IsMonitoring && !_disposed;
+
+    // ── Constructor ──────────────────────────────────────────────────────────
+
+    public EvoControlCenterViewModel(
+        LivePerformanceMonitor? monitor = null,
+        LiveAnomalyDetector? anomalyDetector = null,
+        AdaptiveOptimizationEngine? optimizationEngine = null,
+        HardwareBottleneckAnalyzer? bottleneckAnalyzer = null,
+        IntelHybridTopologyProvider? topologyProvider = null,
+        WindowsGamingConfigService? gamingConfigService = null,
+        Dispatcher? dispatcher = null)
+    {
+        _monitor = monitor ?? new LivePerformanceMonitor();
+        _anomalyDetector = anomalyDetector ?? new LiveAnomalyDetector();
+        _optimizationEngine = optimizationEngine ?? new AdaptiveOptimizationEngine();
+        _bottleneckAnalyzer = bottleneckAnalyzer ?? new HardwareBottleneckAnalyzer();
+        _topologyProvider = topologyProvider ?? new IntelHybridTopologyProvider();
+        _gamingConfigService = gamingConfigService ?? new WindowsGamingConfigService();
+        _dispatcher = dispatcher ?? Dispatcher.CurrentDispatcher;
+
+        Topology = _topologyProvider.DiscoverTopology();
+        GamingConfig = _gamingConfigService.ReadConfiguration();
+
+        TopologySummary = Topology.IsHybrid
+            ? $"{Topology.ProcessorName} · {Topology.TotalPhysicalCores} núcleos ({Topology.PerformanceCores} P-Cores / {Topology.PerformanceCores * 2} hilos + {Topology.EfficientCores} E-Cores)"
+            : $"{Topology.ProcessorName} · {Topology.LogicalProcessors} procesadores lógicos";
+
+        GamingConfigSummary = $"Modo Juego: {(GamingConfig.GameModeEnabled ? "Activo" : "Desactivado")} · GameDVR: {(GamingConfig.GameDvrEnabled ? "Activo (Consumo extra)" : "Desactivado (Óptimo)")} · HAGS: {(GamingConfig.HagsEnabled ? "Activo" : "Desactivado")} · Plan: {GamingConfig.PowerPlanName}";
+
+        _monitor.SnapshotCaptured += OnSnapshotCaptured;
+    }
+
+    // ── Control del ciclo de vida del monitor ────────────────────────────────
+
+    public Task StartAsync()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        if (IsMonitoring)
+            return Task.CompletedTask;
+
+        _cancellation?.Dispose();
+        _cancellation = new CancellationTokenSource();
+
+        var token = _cancellation.Token;
+
+        IsMonitoring = true;
+        MonitorStatus = "INICIANDO";
+        SystemHealth = "RECOPILANDO DATOS";
+
+        _monitorTask = Task.Run(
+            () => _monitor.StartAsync(token),
+            token);
+
+        _ = ObserveMonitorAsync(_monitorTask);
+
+        return Task.CompletedTask;
+    }
+
+    public async Task StopAsync()
+    {
+        if (!IsMonitoring)
+            return;
+
+        MonitorStatus = "DETENIENDO";
+        _cancellation?.Cancel();
+
+        if (_monitorTask is not null)
+        {
+            try
+            {
+                await _monitorTask;
+            }
+            catch (OperationCanceledException)
+            {
+                // Detención solicitada por el usuario.
+            }
+        }
+
+        IsMonitoring = false;
+        MonitorStatus = "DETENIDO";
+    }
+
+    // ── Observación del monitor ──────────────────────────────────────────────
+
+    private async Task ObserveMonitorAsync(Task task)
+    {
+        try
+        {
+            await task;
+        }
+        catch (OperationCanceledException)
+        {
+            // Finalización normal del monitor.
+        }
+        catch (Exception ex)
+        {
+            await _dispatcher.InvokeAsync(() =>
+            {
+                MonitorStatus = "ERROR";
+                SystemHealth = "ERROR DE MONITORIZACIÓN";
+                Alerts.Insert(0, ex.Message);
+            });
+        }
+        finally
+        {
+            await _dispatcher.InvokeAsync(() =>
+            {
+                IsMonitoring = false;
+
+                if (MonitorStatus != "ERROR")
+                    MonitorStatus = "DETENIDO";
+            });
+        }
+    }
+
+    private void OnSnapshotCaptured(LivePerformanceSnapshot snapshot)
+    {
+        _ = _dispatcher.InvokeAsync(() => UpdateDashboard(snapshot));
+    }
+
+    // ── Actualización del dashboard ──────────────────────────────────────────
+
+    private void UpdateDashboard(LivePerformanceSnapshot snapshot)
+    {
+        if (_disposed)
+            return;
+
+        // Métricas en tiempo real
+        SystemCpuPercent = snapshot.SystemCpuPercent;
+        Cs2CpuPercent = snapshot.Cs2CpuPercent;
+        MemoryUsagePercent = snapshot.MemoryUsagePercent;
+        AvailableMemoryMb = snapshot.AvailableMemoryMb;
+        CommitUsedMb = snapshot.CommitUsedMb;
+        CommitLimitMb = snapshot.CommitLimitMb;
+        Cs2MemoryMb = snapshot.Cs2MemoryMb;
+        GpuUsagePercent = snapshot.GpuUsagePercent;
+        GpuSharedMemoryMb = snapshot.GpuSharedMemoryMb;
+        ActiveProcessCount = snapshot.ActiveProcessCount;
+        Cs2ProcessCount = snapshot.Cs2ProcessCount;
+        LastUpdated = snapshot.Timestamp;
+
+        // Procesos competidores en tiempo real
+        TopProcesses.Clear();
+        foreach (var p in snapshot.TopProcesses)
+            TopProcesses.Add(p);
+
+        // Detección de anomalías en telemetría
+        var history = _monitor.GetHistory();
+        var anomalyReport = _anomalyDetector.Analyze(history);
+
+        Anomalies.Clear();
+        foreach (var anomaly in anomalyReport.Anomalies)
+            Anomalies.Add(anomaly);
+
+        // Alertas combinadas
+        Alerts.Clear();
+        foreach (var alert in snapshot.Alerts)
+            Alerts.Add(alert);
+
+        foreach (var anomaly in anomalyReport.Anomalies)
+        {
+            if (!Alerts.Contains(anomaly.Code))
+                Alerts.Add($"{anomaly.Title}: {anomaly.Evidence}");
+        }
+
+        // Análisis de cuello de botella mediante HardwareBottleneckAnalyzer
+        if (history.Count >= 5)
+        {
+            var bottleneckSamples = history.Select(s => new HardwarePerformanceSample(
+                CpuUsagePercent: s.SystemCpuPercent,
+                GpuUsagePercent: s.GpuUsagePercent ?? 0,
+                MemoryUsagePercent: s.MemoryUsagePercent,
+                AvailableMemoryMb: s.AvailableMemoryMb,
+                DiskActivePercent: 0,
+                DiskResponseTimeMs: 0,
+                CpuTemperatureCelsius: 0,
+                GpuTemperatureCelsius: 0,
+                CpuFrequencyMhz: 0,
+                GpuFrequencyMhz: 0,
+                CpuPowerWatts: 0,
+                GpuPowerWatts: 0,
+                FrametimeMs: 0,
+                GpuMemoryUsageMb: s.GpuSharedMemoryMb ?? 0,
+                TotalGpuMemoryMb: 2048));
+
+            var bottleneckReport = _bottleneckAnalyzer.Analyze(bottleneckSamples);
+
+            PrimaryBottleneckText = bottleneckReport.PrimaryBottleneck switch
+            {
+                BottleneckType.Gpu => "GPU (Intel UHD Graphics - Límite de procesamiento gráfico)",
+                BottleneckType.Cpu => "CPU (Saturación de procesamiento central)",
+                BottleneckType.Memory => "MEMORIA RAM (Presión de memoria física / commit)",
+                BottleneckType.Storage => "ALMACENAMIENTO (Actividad de disco)",
+                BottleneckType.Thermal => "TÉRMICO (Throttling de temperatura)",
+                BottleneckType.Power => "ENERGÍA (Límite de potencia)",
+                _ => "EQUILIBRADO / SIN CUELLO DE BOTELLA DEMOSTRABLE"
+            };
+
+            BottleneckFindings.Clear();
+            foreach (var finding in bottleneckReport.Findings)
+                BottleneckFindings.Add(finding);
+        }
+        else
+        {
+            PrimaryBottleneckText = "RECOPILANDO MUESTRAS (Mínimo 5 requeridas)";
+        }
+
+        // Motor de optimización adaptativa (Core): combina señales de anomalía + configuración de Windows
+        var signals = new List<OptimizationSignal>(anomalyReport.OptimizationSignals);
+        signals.AddRange(_gamingConfigService.GenerateSignals(GamingConfig));
+
+        if (signals.Count > 0)
+        {
+            var optimizationReport = _optimizationEngine.Evaluate(signals);
+
+            OptimizationRecommendations.Clear();
+            foreach (var rec in optimizationReport.Recommendations)
+                OptimizationRecommendations.Add(rec);
+        }
+
+        // Estado general del sistema
+        SystemHealth = !anomalyReport.HasEnoughData
+            ? "RECOPILANDO DATOS"
+            : anomalyReport.Anomalies.Any(x =>
+                x.Severity == LiveAnomalySeverity.Critical)
+                ? "ATENCIÓN CRÍTICA"
+                : anomalyReport.Anomalies.Any(x =>
+                    x.Severity == LiveAnomalySeverity.Warning)
+                    ? "ATENCIÓN"
+                    : "ESTABLE";
+
+        MonitorStatus = "MONITOREANDO";
+    }
+
+    // ── INPC ─────────────────────────────────────────────────────────────────
+
+    private bool SetField<T>(
+        ref T field,
+        T value,
+        [CallerMemberName] string? propertyName = null)
+    {
+        if (EqualityComparer<T>.Default.Equals(field, value))
+            return false;
+
+        field = value;
+        OnPropertyChanged(propertyName);
+        return true;
+    }
+
+    private void OnPropertyChanged(
+        [CallerMemberName] string? propertyName = null)
+    {
+        PropertyChanged?.Invoke(
+            this,
+            new PropertyChangedEventArgs(propertyName));
+    }
+
+    // ── Disposable ───────────────────────────────────────────────────────────
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_disposed)
+            return;
+
+        if (IsMonitoring)
+            await StopAsync();
+
+        _disposed = true;
+        _monitor.SnapshotCaptured -= OnSnapshotCaptured;
+        _cancellation?.Dispose();
+        _monitor.Dispose();
+    }
+}

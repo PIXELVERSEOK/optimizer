@@ -1,6 +1,7 @@
-﻿using System.Collections.Concurrent;
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Runtime.Versioning;
 
 namespace EvoOptimizer.Infrastructure.Telemetry;
 
@@ -19,6 +20,12 @@ public sealed record LiveMonitorOptions(
         600);
 }
 
+public sealed record ProcessSummary(
+    int ProcessId,
+    string Name,
+    double CpuPercent,
+    double MemoryMb);
+
 public sealed record LivePerformanceSnapshot(
     DateTimeOffset Timestamp,
     double SystemCpuPercent,
@@ -26,17 +33,25 @@ public sealed record LivePerformanceSnapshot(
     double TotalMemoryMb,
     double AvailableMemoryMb,
     double MemoryUsagePercent,
+    double CommitUsedMb,
+    double CommitLimitMb,
     double Cs2MemoryMb,
     int Cs2ProcessCount,
     int ActiveProcessCount,
     IReadOnlyList<int> Cs2ProcessIds,
+    IReadOnlyList<ProcessSummary> TopProcesses,
+    double? GpuUsagePercent,
+    double? GpuSharedMemoryMb,
     IReadOnlyList<string> Alerts);
 
+[SupportedOSPlatform("windows")]
 public sealed class LivePerformanceMonitor : IDisposable
 {
     private readonly LiveMonitorOptions _options;
     private readonly ConcurrentQueue<LivePerformanceSnapshot> _history = new();
     private readonly Dictionary<int, TimeSpan> _previousCs2Cpu = new();
+    private readonly Dictionary<int, TimeSpan> _previousAllProcessCpu = new();
+    private readonly WindowsGpuReader _gpuReader = new();
 
     private ulong? _previousIdle;
     private ulong? _previousKernel;
@@ -122,6 +137,7 @@ public sealed class LivePerformanceMonitor : IDisposable
         var cpu = ReadSystemCpu();
         var memory = ReadMemory();
         var processes = ReadProcesses(now);
+        var (gpuUsage, gpuSharedMem) = _gpuReader.Read();
 
         var alerts = new List<string>();
 
@@ -131,11 +147,17 @@ public sealed class LivePerformanceMonitor : IDisposable
         if (memory.UsagePercent >= _options.HighMemoryThresholdPercent)
             alerts.Add("HIGH_MEMORY_PRESSURE");
 
+        if (memory.CommitLimitMb > 0 && (memory.CommitUsedMb / memory.CommitLimitMb >= 0.90))
+            alerts.Add("HIGH_COMMIT_PRESSURE");
+
         if (processes.Cs2CpuPercent >= _options.HighCs2CpuThresholdPercent)
             alerts.Add("HIGH_CS2_CPU");
 
         if (processes.Cs2Count == 0)
             alerts.Add("CS2_NOT_RUNNING");
+
+        if (gpuUsage.HasValue && gpuUsage.Value >= 95)
+            alerts.Add("HIGH_GPU_USAGE");
 
         return new LivePerformanceSnapshot(
             now,
@@ -144,10 +166,15 @@ public sealed class LivePerformanceMonitor : IDisposable
             memory.TotalMb,
             memory.AvailableMb,
             memory.UsagePercent,
+            memory.CommitUsedMb,
+            memory.CommitLimitMb,
             processes.Cs2MemoryMb,
             processes.Cs2Count,
             processes.ActiveCount,
             processes.Cs2ProcessIds,
+            processes.TopProcesses,
+            gpuUsage,
+            gpuSharedMem,
             alerts);
     }
 
@@ -188,7 +215,7 @@ public sealed class LivePerformanceMonitor : IDisposable
         return Math.Clamp(result, 0, 100);
     }
 
-    private (double TotalMb, double AvailableMb, double UsagePercent)
+    private (double TotalMb, double AvailableMb, double UsagePercent, double CommitUsedMb, double CommitLimitMb)
         ReadMemory()
     {
         var status = new MemoryStatusEx
@@ -199,17 +226,23 @@ public sealed class LivePerformanceMonitor : IDisposable
         if (!GlobalMemoryStatusEx(ref status) ||
             status.TotalPhysical == 0)
         {
-            return (0, 0, 0);
+            return (0, 0, 0, 0, 0);
         }
 
         var total = status.TotalPhysical / 1024d / 1024d;
         var available = status.AvailablePhysical / 1024d / 1024d;
         var usage = (total - available) / total * 100;
 
+        var commitLimit = status.TotalPageFile / 1024d / 1024d;
+        var commitAvail = status.AvailablePageFile / 1024d / 1024d;
+        var commitUsed = Math.Max(0, commitLimit - commitAvail);
+
         return (
             Math.Round(total, 1),
             Math.Round(available, 1),
-            Math.Round(Math.Clamp(usage, 0, 100), 1));
+            Math.Round(Math.Clamp(usage, 0, 100), 1),
+            Math.Round(commitUsed, 1),
+            Math.Round(commitLimit, 1));
     }
 
     private ProcessMetrics ReadProcesses(DateTimeOffset now)
@@ -221,42 +254,60 @@ public sealed class LivePerformanceMonitor : IDisposable
         var cs2Memory = 0L;
         var cs2Cpu = 0d;
         var cs2Ids = new List<int>();
-        var currentCpu = new Dictionary<int, TimeSpan>();
+        var currentCs2Cpu = new Dictionary<int, TimeSpan>();
+        var currentAllCpu = new Dictionary<int, TimeSpan>();
+        var topProcessCandidates = new List<ProcessSummary>();
+
+        double elapsedSeconds = 0;
+        if (_previousCapture.HasValue)
+        {
+            elapsedSeconds = (now - _previousCapture.Value).TotalSeconds;
+        }
+
+        int processorCount = Environment.ProcessorCount;
 
         foreach (var process in processList.Items)
         {
             try
             {
                 activeCount++;
+                int pid = process.Id;
+                string pName = process.ProcessName;
+                bool isCs2 = string.Equals(pName, "cs2", StringComparison.OrdinalIgnoreCase);
 
-                if (!string.Equals(
-                    process.ProcessName,
-                    "cs2",
-                    StringComparison.OrdinalIgnoreCase))
-                    continue;
-
-                cs2Count++;
-                cs2Ids.Add(process.Id);
-                cs2Memory += process.WorkingSet64;
+                if (isCs2)
+                {
+                    cs2Count++;
+                    cs2Ids.Add(pid);
+                    cs2Memory += process.WorkingSet64;
+                }
 
                 var cpuTime = process.TotalProcessorTime;
-                currentCpu[process.Id] = cpuTime;
+                currentAllCpu[pid] = cpuTime;
 
-                if (_previousCs2Cpu.TryGetValue(
-                    process.Id, out var previous))
+                if (isCs2)
                 {
-                    var delta = cpuTime - previous;
+                    currentCs2Cpu[pid] = cpuTime;
+                }
 
-                    if (delta >= TimeSpan.Zero &&
-                        _previousCapture.HasValue)
+                if (elapsedSeconds > 0 && processorCount > 0 && _previousAllProcessCpu.TryGetValue(pid, out var prevCpu))
+                {
+                    var delta = cpuTime - prevCpu;
+                    if (delta > TimeSpan.Zero)
                     {
-                        var elapsed = (now - _previousCapture.Value)
-                            .TotalSeconds;
-
-                        if (elapsed > 0)
+                        double pct = delta.TotalSeconds / (elapsedSeconds * processorCount) * 100d;
+                        if (pct >= 0.5 && !string.Equals(pName, "Idle", StringComparison.OrdinalIgnoreCase))
                         {
-                            cs2Cpu += delta.TotalSeconds /
-                                (elapsed * Environment.ProcessorCount) * 100;
+                            topProcessCandidates.Add(new ProcessSummary(
+                                pid,
+                                pName,
+                                Math.Round(Math.Clamp(pct, 0, 100), 1),
+                                Math.Round(process.WorkingSet64 / 1024d / 1024d, 1)));
+                        }
+
+                        if (isCs2)
+                        {
+                            cs2Cpu += pct;
                         }
                     }
                 }
@@ -272,18 +323,27 @@ public sealed class LivePerformanceMonitor : IDisposable
         }
 
         _previousCs2Cpu.Clear();
-
-        foreach (var item in currentCpu)
+        foreach (var item in currentCs2Cpu)
             _previousCs2Cpu[item.Key] = item.Value;
 
+        _previousAllProcessCpu.Clear();
+        foreach (var item in currentAllCpu)
+            _previousAllProcessCpu[item.Key] = item.Value;
+
         _previousCapture = now;
+
+        var topProcesses = topProcessCandidates
+            .OrderByDescending(x => x.CpuPercent)
+            .Take(4)
+            .ToArray();
 
         return new ProcessMetrics(
             Math.Round(Math.Clamp(cs2Cpu, 0, 100), 1),
             Math.Round(cs2Memory / 1024d / 1024d, 1),
             cs2Count,
             activeCount,
-            cs2Ids);
+            cs2Ids,
+            topProcesses);
     }
 
     private static ulong Delta(ulong current, ulong previous)
@@ -301,6 +361,8 @@ public sealed class LivePerformanceMonitor : IDisposable
         SnapshotCaptured = null;
         _history.Clear();
         _previousCs2Cpu.Clear();
+        _previousAllProcessCpu.Clear();
+        _gpuReader.Dispose();
     }
 
     private sealed record ProcessMetrics(
@@ -308,7 +370,8 @@ public sealed class LivePerformanceMonitor : IDisposable
         double Cs2MemoryMb,
         int Cs2Count,
         int ActiveCount,
-        IReadOnlyList<int> Cs2ProcessIds);
+        IReadOnlyList<int> Cs2ProcessIds,
+        IReadOnlyList<ProcessSummary> TopProcesses);
 
     private sealed class ProcessCollection : IDisposable
     {

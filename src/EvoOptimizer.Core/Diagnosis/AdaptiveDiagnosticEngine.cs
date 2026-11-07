@@ -47,6 +47,13 @@ public sealed class AdaptiveDiagnosticEngine
         AnalyzeDisplay(audit, findings);
         AnalyzeCs2(audit, findings);
 
+        // Evidencia ampliada (ASUS ExpertCenter integrado): Dual Channel verificable,
+        // CPU utilización/potencia, NVMe, SMART completo, TRIM, plan, servicios,
+        // inicio y CPU instantánea de procesos.
+        AnalyzeHardwareEvidence(
+            HardwareEvidenceEvaluator.Evaluate(audit),
+            findings);
+
         findings.Add(new DiagnosticFinding(
             "BENCHMARK_REQUIRED",
             DiagnosticSeverity.Information,
@@ -324,6 +331,320 @@ private static double? ParseStorageNumber(string? value)
             "SYSTEM_REPORTED",
             "Contrastar con la configuración avanzada de pantalla y el modo activo del monitor."
         ));
+    }
+
+    /// <summary>
+    /// Evidencia ampliada del diagnóstico ASUS ExpertCenter integrado.
+    /// No inventa valores: todo dato ausente queda UNKNOWN.
+    /// </summary>
+    private static void AnalyzeHardwareEvidence(
+        HardwareDiagnosticSnapshot snapshot,
+        List<DiagnosticFinding> findings)
+    {
+        AnalyzeDualChannel(snapshot, findings);
+        AnalyzeCpuPower(snapshot, findings);
+        AnalyzeStorageEvidence(snapshot, findings);
+        AnalyzeTrim(snapshot, findings);
+        AnalyzePowerPlan(snapshot, findings);
+        AnalyzeServicesAndStartup(snapshot, findings);
+        AnalyzeInstantaneousProcesses(snapshot, findings);
+    }
+
+    private static void AnalyzeDualChannel(
+        HardwareDiagnosticSnapshot snapshot,
+        List<DiagnosticFinding> findings)
+    {
+        var memory = snapshot.Memory;
+
+        string confidence = memory.Confidence switch
+        {
+            EvidenceConfidence.High => "High",
+            EvidenceConfidence.Medium => "Medium",
+            EvidenceConfidence.Low => "Low",
+            _ => "UNKNOWN"
+        };
+
+        string title = memory.Mode switch
+        {
+            DualChannelMode.VerifiedDualChannel => "Dual Channel verificado",
+            DualChannelMode.VerifiedSingleChannel => "Canal único verificado",
+            _ => "Dual Channel NO verificable"
+        };
+
+        string explanation = memory.Mode switch
+        {
+            DualChannelMode.VerifiedDualChannel =>
+                $"Se verificaron {memory.ChannelCount} canales distintos entre " +
+                $"{memory.ModuleCount} módulos instalados. La cantidad de módulos " +
+                "por sí sola no se usó como prueba.",
+            DualChannelMode.VerifiedSingleChannel =>
+                $"Los {memory.ModuleCount} módulos comparten un único canal informado. " +
+                "No se declara Dual Channel sin evidencia de canales distintos.",
+            _ =>
+                "Windows no expone localizadores de canal suficientes. Dos módulos " +
+                "instalados NO confirman Dual Channel: el modo queda UNKNOWN."
+        };
+
+        findings.Add(new DiagnosticFinding(
+            "MEMORY_DUAL_CHANNEL",
+            memory.Mode == DualChannelMode.VerifiedSingleChannel
+                ? DiagnosticSeverity.Warning
+                : DiagnosticSeverity.Information,
+            title,
+            explanation,
+            string.Join(" | ", memory.Evidence),
+            confidence,
+            memory.Mode == DualChannelMode.VerifiedDualChannel
+                ? "No se requiere ninguna acción."
+                : memory.Mode == DualChannelMode.VerifiedSingleChannel
+                    ? "Verificar en el manual de la placa si hay ranuras libres y si " +
+                      "un segundo módulo compatible permitiría Dual Channel. EVO no " +
+                      "declara mejoras de rendimiento sin medición."
+                    : "No modificar la configuración de memoria basándose en datos " +
+                      "incompletos. Si hace falta, consultar el manual de la placa."));
+
+        foreach (string warning in memory.Warnings)
+        {
+            findings.Add(new DiagnosticFinding(
+                "MEMORY_TOPOLOGY_LIMITATION",
+                DiagnosticSeverity.Information,
+                "Limitación de la topología de memoria",
+                warning,
+                $"Módulos: {memory.ModuleCount}; ranuras informadas: " +
+                $"{memory.SlotCount?.ToString(CultureInfo.InvariantCulture) ?? "UNKNOWN"}.",
+                confidence,
+                "No cambiar la configuración automáticamente."));
+        }
+    }
+
+    private static void AnalyzeCpuPower(
+        HardwareDiagnosticSnapshot snapshot,
+        List<DiagnosticFinding> findings)
+    {
+        var cpu = snapshot.Cpu;
+
+        findings.Add(new DiagnosticFinding(
+            "CPU_POWER_EVIDENCE",
+            DiagnosticSeverity.Information,
+            "CPU: utilización medida y potencia UNKNOWN",
+            cpu.InstantaneousUtilizationPercent.HasValue
+                ? $"Windows informa {cpu.InstantaneousUtilizationPercent.Value}% de " +
+                  "utilización instantánea. Ese valor no es consumo eléctrico."
+                : "No se informó utilización instantánea de CPU.",
+            $"{cpu.PowerExplanation} " +
+            $"Frecuencia actual: {cpu.CurrentClockMhz?.ToString(CultureInfo.InvariantCulture) ?? "UNKNOWN"} MHz; " +
+            $"máxima: {cpu.MaxClockMhz?.ToString(CultureInfo.InvariantCulture) ?? "UNKNOWN"} MHz.",
+            cpu.InstantaneousUtilizationPercent.HasValue ? "SYSTEM_REPORTED" : "UNKNOWN",
+            "No interpretar la CPU acumulada de un proceso como consumo instantáneo. " +
+            "Para potencia real se requiere un contador de energía (RAPL/PDH)."));
+    }
+
+    private static void AnalyzeStorageEvidence(
+        HardwareDiagnosticSnapshot snapshot,
+        List<DiagnosticFinding> findings)
+    {
+        if (snapshot.Storage.Count == 0)
+        {
+            findings.Add(new DiagnosticFinding(
+                "STORAGE_HEALTH_UNKNOWN",
+                DiagnosticSeverity.Warning,
+                "Salud del almacenamiento UNKNOWN",
+                "No se pudo obtener información de discos físicos, SMART ni NVMe.",
+                "Get-PhysicalDisk/MSStorageDriver no devolvieron datos utilizables.",
+                "UNKNOWN",
+                "Revisar permisos de la sesión. EVO no inventa estados de salud."));
+            return;
+        }
+
+        foreach (var disk in snapshot.Storage)
+        {
+            string name = disk.Name ?? "Disco sin nombre";
+
+            string health = disk.HealthStatus ?? "UNKNOWN";
+            string nvme = disk.IsNvme switch
+            {
+                true => "NVMe verificado",
+                false => "NVMe no detectado (bus " + (disk.BusType ?? "UNKNOWN") + ")",
+                null => "NVMe UNKNOWN (sin datos de bus)"
+            };
+
+            string counters =
+                $"Wear: {FormatNumber(disk.WearPercent)}; " +
+                $"Temperatura: {FormatNumber(disk.TemperatureCelsius)} °C; " +
+                $"PowerOnHours: {FormatNumber(disk.PowerOnHours)}; " +
+                $"errores lectura/escritura: {FormatNumber(disk.ReadErrorsTotal)}/" +
+                $"{FormatNumber(disk.WriteErrorsTotal)}.";
+
+            bool incomplete =
+                disk.SmartCoverage is SmartCoverage.HealthStatusOnly or
+                    SmartCoverage.Unavailable;
+
+            findings.Add(new DiagnosticFinding(
+                $"STORAGE_HEALTH_{SanitizeId(name)}",
+                disk.SmartCoverage == SmartCoverage.Unavailable
+                    ? DiagnosticSeverity.Warning
+                    : disk.HealthStatus is not null &&
+                      !disk.HealthStatus.Equals("Healthy", StringComparison.OrdinalIgnoreCase)
+                        ? DiagnosticSeverity.Warning
+                        : DiagnosticSeverity.Information,
+                $"Almacenamiento: {name}",
+                $"{nvme}. HealthStatus: {health}. " +
+                (incomplete
+                    ? "HealthStatus NO equivale a SMART completo: faltan contadores " +
+                      "de confiabilidad y los valores quedan UNKNOWN."
+                    : $"SMART verificado mediante {disk.SmartCoverageText}."),
+                counters + $" Cobertura SMART: {disk.SmartCoverageText}.",
+                disk.SmartCoverage == SmartCoverage.ReliabilityCounters
+                    ? "High"
+                    : disk.SmartCoverage == SmartCoverage.FailurePrediction
+                        ? "Medium"
+                        : disk.SmartCoverage == SmartCoverage.HealthStatusOnly
+                            ? "Low"
+                            : "UNKNOWN",
+                incomplete
+                    ? "No asumir que el disco está sano ni que está fallando. " +
+                      "Para SMART completo se requieren permisos de administrador."
+                    : "Vigilar la temperatura y el desgaste informados."));
+        }
+    }
+
+    private static void AnalyzeTrim(
+        HardwareDiagnosticSnapshot snapshot,
+        List<DiagnosticFinding> findings)
+    {
+        string confidence = snapshot.Trim.Confidence == EvidenceConfidence.High
+            ? "High"
+            : "UNKNOWN";
+
+        findings.Add(new DiagnosticFinding(
+            "STORAGE_TRIM",
+            snapshot.Trim.Enabled == false
+                ? DiagnosticSeverity.Warning
+                : DiagnosticSeverity.Information,
+            snapshot.Trim.Enabled switch
+            {
+                true => "TRIM activo",
+                false => "TRIM desactivado",
+                _ => "TRIM UNKNOWN"
+            },
+            snapshot.Trim.Enabled switch
+            {
+                true => "Windows informa TRIM habilitado para el sistema de archivos.",
+                false => "Windows informa TRIM deshabilitado. En SSD/NVMe esto " +
+                         "puede afectar el rendimiento sostenido.",
+                _ => "No se pudo leer DisableDeleteNotify; el estado queda UNKNOWN."
+            },
+            string.Join(" | ", snapshot.Trim.Entries),
+            confidence,
+            snapshot.Trim.Enabled == false
+                ? "Revisar la configuración de TRIM antes de cambiarla; no se " +
+                  "modifica automáticamente."
+                : "No se requiere ninguna acción."));
+    }
+
+    private static void AnalyzePowerPlan(
+        HardwareDiagnosticSnapshot snapshot,
+        List<DiagnosticFinding> findings)
+    {
+        var plan = snapshot.PowerPlan;
+
+        findings.Add(new DiagnosticFinding(
+            "POWER_PLAN_ACTIVE",
+            DiagnosticSeverity.Information,
+            "Plan de energía activo",
+            plan.Name is null && plan.Guid is null
+                ? "No se pudo leer el plan de energía activo."
+                : $"Plan activo: {plan.Name ?? "UNKNOWN"} ({plan.Guid ?? "GUID UNKNOWN"}).",
+            plan.RawText ?? "powercfg no devolvió datos.",
+            plan.Confidence == EvidenceConfidence.High ? "High" : "UNKNOWN",
+            "Un plan Equilibrado puede retrasar el escalado de frecuencias. " +
+            "El cambio, si corresponde, se realiza desde el catálogo con " +
+            "autorización y medición."));
+    }
+
+    private static void AnalyzeServicesAndStartup(
+        HardwareDiagnosticSnapshot snapshot,
+        List<DiagnosticFinding> findings)
+    {
+        findings.Add(new DiagnosticFinding(
+            "SERVICES_AUTO_STATUS",
+            snapshot.Services.StoppedAutoStartCount > 0
+                ? DiagnosticSeverity.Information
+                : DiagnosticSeverity.Information,
+            "Servicios de inicio automático",
+            $"{snapshot.Services.AutoStartCount} servicios en inicio automático; " +
+            $"{snapshot.Services.StoppedAutoStartCount} detenidos.",
+            snapshot.Services.StoppedServiceNames.Count == 0
+                ? "Sin servicios automáticos detenidos."
+                : "Detenidos: " + string.Join(", ", snapshot.Services.StoppedServiceNames),
+            "SYSTEM_REPORTED",
+            "EVO no desactiva servicios automáticamente. Revisar cada caso con " +
+            "documentación del fabricante antes de cambiarlo."));
+
+        findings.Add(new DiagnosticFinding(
+            "STARTUP_APPS_SNAPSHOT",
+            DiagnosticSeverity.Information,
+            "Aplicaciones de inicio",
+            snapshot.Startup.Names.Count == 0
+                ? "No se informaron aplicaciones de inicio."
+                : $"{snapshot.Startup.Names.Count} aplicaciones de inicio informadas.",
+            snapshot.Startup.Names.Count == 0
+                ? "Win32_StartupCommand no devolvió entradas."
+                : string.Join(", ", snapshot.Startup.Names.Take(10)),
+            "SYSTEM_REPORTED",
+            "Las desactivaciones se realizan individualmente desde el catálogo, " +
+            "con autorización, diario de cambios y rollback."));
+    }
+
+    private static void AnalyzeInstantaneousProcesses(
+        HardwareDiagnosticSnapshot snapshot,
+        List<DiagnosticFinding> findings)
+    {
+        var processes = snapshot.Processes;
+
+        string evidence = processes.TopProcesses.Count == 0
+            ? "Sin muestras emparejadas."
+            : string.Join("; ", processes.TopProcesses
+                .Take(5)
+                .Select(p =>
+                    $"{p.Name} (PID {p.ProcessId}): " +
+                    $"{p.InstantaneousCpuPercent:F1}% CPU; " +
+                    $"{p.WorkingSetMb:F0} MB"));
+
+        findings.Add(new DiagnosticFinding(
+            "PROCESS_INSTANTANEOUS_CPU",
+            DiagnosticSeverity.Information,
+            processes.HasSufficientEvidence
+                ? "CPU instantánea por proceso calculada"
+                : "CPU instantánea por proceso UNKNOWN",
+            processes.HasSufficientEvidence
+                ? "La carga se calculó como delta de TotalProcessorTime entre dos " +
+                  "muestras. No se usa la CPU acumulada como consumo instantáneo."
+                : "No hubo dos muestras emparejadas suficientes para calcular la carga.",
+            evidence,
+            processes.HasSufficientEvidence ? "Medium" : "UNKNOWN",
+            "Usar estos valores como orientación; confirmar con el monitor en vivo " +
+            "antes de tomar decisiones."));
+    }
+
+    private static string FormatNumber(double? value) =>
+        value.HasValue
+            ? value.Value.ToString("F1", CultureInfo.InvariantCulture)
+            : "UNKNOWN";
+
+    private static string FormatNumber(long? value) =>
+        value.HasValue
+            ? value.Value.ToString(CultureInfo.InvariantCulture)
+            : "UNKNOWN";
+
+    private static string SanitizeId(string value)
+    {
+        var builder = new System.Text.StringBuilder(value.Length);
+
+        foreach (char c in value.ToUpperInvariant())
+            builder.Append(char.IsLetterOrDigit(c) ? c : '_');
+
+        return builder.ToString();
     }
 
     private static void AnalyzeCs2(

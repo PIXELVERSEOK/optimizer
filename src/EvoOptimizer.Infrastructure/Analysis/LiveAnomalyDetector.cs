@@ -1,4 +1,4 @@
-﻿using EvoOptimizer.Core.Optimization;
+using EvoOptimizer.Core.Optimization;
 using EvoOptimizer.Infrastructure.Telemetry;
 
 namespace EvoOptimizer.Infrastructure.Analysis;
@@ -46,8 +46,7 @@ public sealed class LiveAnomalyDetector
 
         var limitations = new List<string>
         {
-            "La monitorización actual no mide directamente el uso de GPU.",
-            "La presión de almacenamiento y las temperaturas requieren sensores adicionales.",
+            "La presión de almacenamiento y las temperaturas térmicas de núcleos requieren sensores específicos.",
             "Las anomalías indican correlación temporal, no causalidad."
         };
 
@@ -102,6 +101,15 @@ public sealed class LiveAnomalyDetector
             x => x.Cs2MemoryMb >= 2048,
             LiveAnomalySeverity.Information,
             "Comprobar la evolución del consumo de memoria durante la sesión.",
+            anomalies);
+
+        Detect(
+            samples,
+            "GPU_BOTTLENECK",
+            "Límite de GPU (Intel UHD)",
+            x => x.GpuUsagePercent.HasValue && x.GpuUsagePercent.Value >= 90,
+            LiveAnomalySeverity.Warning,
+            "La GPU integrada se encuentra cerca de su capacidad máxima. Optimizar resolución o FSR en CS2.",
             anomalies);
 
         DetectBackgroundActivity(samples, anomalies);
@@ -209,6 +217,12 @@ public sealed class LiveAnomalyDetector
             anomalies,
             "HIGH_MEMORY_PRESSURE",
             "HIGH_MEMORY_PRESSURE");
+
+        AddSignal(
+            signals,
+            anomalies,
+            "GPU_BOTTLENECK",
+            "GPU_BOTTLENECK");
 
         if (anomalies.Any(x => x.Code == "BACKGROUND_ACTIVITY_SPIKE"))
         {

@@ -18,22 +18,43 @@ function Get-Many($Class, $Props) {
   try { @(Get-CimInstance -ClassName $Class -ErrorAction Stop | Select-Object -Property $Props) }
   catch { @() }
 }
+function Get-ManyFiltered($Class, $Filter, $Props) {
+  try { @(Get-CimInstance -ClassName $Class -Filter $Filter -ErrorAction Stop | Select-Object -Property $Props) }
+  catch { @() }
+}
 $result = [ordered]@{
  computer = Get-One Win32_ComputerSystem 'Manufacturer','Model','TotalPhysicalMemory','SystemType','NumberOfLogicalProcessors'
  board = Get-One Win32_BaseBoard 'Manufacturer','Product','Version'
  bios = Get-One Win32_BIOS 'Manufacturer','SMBIOSBIOSVersion','ReleaseDate'
- cpu = Get-One Win32_Processor 'Name','NumberOfCores','NumberOfLogicalProcessors','MaxClockSpeed','CurrentClockSpeed'
- gpu = Get-Many Win32_VideoController 'Name','DriverVersion','DriverDate','AdapterRAM','CurrentHorizontalResolution','CurrentVerticalResolution','CurrentRefreshRate'
- ram = Get-Many Win32_PhysicalMemory 'BankLabel','Manufacturer','PartNumber','Capacity','Speed','ConfiguredClockSpeed','DeviceLocator'
+ cpu = Get-Many Win32_Processor 'Name','Manufacturer','NumberOfCores','NumberOfLogicalProcessors','MaxClockSpeed','CurrentClockSpeed','LoadPercentage','L2CacheSize','L3CacheSize','ProcessorId','SocketDesignation'
+ gpu = Get-Many Win32_VideoController 'Name','AdapterCompatibility','DriverVersion','DriverDate','AdapterRAM','VideoProcessor','PNPDeviceID','CurrentHorizontalResolution','CurrentVerticalResolution','CurrentRefreshRate','Status'
+ ram = Get-Many Win32_PhysicalMemory 'BankLabel','DeviceLocator','Manufacturer','PartNumber','Capacity','Speed','ConfiguredClockSpeed','DataWidth','TotalWidth','FormFactor','SMBIOSMemoryType','SerialNumber'
+ memoryArray = Get-One Win32_PhysicalMemoryArray 'MemoryDevices','MaxCapacity','MemoryErrorCorrection'
  os = Get-One Win32_OperatingSystem 'Caption','Version','BuildNumber','OSArchitecture','LastBootUpTime'
  disks = Get-Many Win32_LogicalDisk 'DeviceID','VolumeName','FileSystem','Size','FreeSpace','DriveType'
  physicalDisks = Get-Many Win32_DiskDrive 'Index','DeviceID','Model','Manufacturer','MediaType','InterfaceType','Size','Status','FirmwareRevision','SerialNumber','BytesPerSector','Partitions','PNPDeviceID'
  partitions = Get-Many Win32_DiskPartition 'DeviceID','DiskIndex','Index','Type','Size','BootPartition'
  volumes = Get-Many Win32_Volume 'DriveLetter','Label','FileSystem','Capacity','FreeSpace','Status','HealthStatus'
  smart = @(Get-CimInstance -Namespace 'root/wmi' -ClassName 'MSStorageDriver_FailurePredictStatus' -ErrorAction SilentlyContinue | Select-Object InstanceName,Active,PredictFailure,Reason)
+ storage = @()
+ try { $storage = @(Get-PhysicalDisk -ErrorAction Stop | Select-Object DeviceId,FriendlyName,MediaType,BusType,HealthStatus,OperationalStatus,Size,SerialNumber) } catch { $storage = @() }
+ reliability = @()
+ try { $reliability = @(Get-PhysicalDisk -ErrorAction Stop | Get-StorageReliabilityCounter -ErrorAction Stop | Select-Object DeviceId,Wear,Temperature,PowerOnHours,ReadErrorsTotal,WriteErrorsTotal,ReadErrorsUncorrected,WriteErrorsUncorrected,StartStopCycleCount) } catch { $reliability = @() }
+ trim = ((fsutil behavior query DisableDeleteNotify 2>$null) | Out-String)
+ powerPlan = ((powercfg /getactivescheme 2>$null) | Out-String)
+ services = Get-ManyFiltered Win32_Service ""StartMode='Auto'"" 'Name','DisplayName','State','StartMode','ProcessId'
+ startup = Get-Many Win32_StartupCommand 'Name','Command','Location','User'
  network = Get-Many Win32_NetworkAdapter 'Name','NetEnabled','Speed','MACAddress'
  cs2 = @(Get-Process -Name cs2 -ErrorAction SilentlyContinue | Select-Object Id,ProcessName,CPU,WorkingSet64,StartTime)
 }
+$sw = [System.Diagnostics.Stopwatch]::StartNew()
+$first = @(Get-Process -ErrorAction SilentlyContinue | Select-Object Id,ProcessName,CPU,WorkingSet64)
+Start-Sleep -Milliseconds 1000
+$second = @(Get-Process -ErrorAction SilentlyContinue | Select-Object Id,ProcessName,CPU,WorkingSet64)
+$sw.Stop()
+$result.processMeta = [ordered]@{ elapsedSeconds = [math]::Round($sw.Elapsed.TotalSeconds,3); logicalProcessors = [Environment]::ProcessorCount }
+$result.processFirst = $first
+$result.processSecond = $second
 $result | ConvertTo-Json -Depth 8 -Compress
 ";
 
@@ -64,20 +85,35 @@ $result | ConvertTo-Json -Depth 8 -Compress
         AddObject(doc.RootElement, "CPU", "cpu", facts);
         AddArray(doc.RootElement, "GPU", "gpu", facts);
         AddArray(doc.RootElement, "RAM", "ram", facts);
+        AddObject(doc.RootElement, "Arreglo de memoria", "memoryArray", facts);
         AddObject(doc.RootElement, "Windows", "os", facts);
         AddArray(doc.RootElement, "Discos", "disks", facts);
         AddArray(doc.RootElement, "Disco físico", "physicalDisks", facts);
         AddArray(doc.RootElement, "Particiones", "partitions", facts);
         AddArray(doc.RootElement, "Volúmenes", "volumes", facts);
-        AddArray(doc.RootElement, "SMART", "smart", facts);
+        AddArray(doc.RootElement, "SMART predictivo", "smart", facts);
+        AddArray(doc.RootElement, "Almacenamiento", "storage", facts);
+        AddArray(doc.RootElement, "Contadores de confiabilidad", "reliability", facts);
+        AddScalar(doc.RootElement, "TRIM", "Output", "trim", facts);
+        AddScalar(doc.RootElement, "Plan de energía", "Output", "powerPlan", facts);
+        AddArray(doc.RootElement, "Servicios", "services", facts);
+        AddArray(doc.RootElement, "Inicio", "startup", facts);
         AddArray(doc.RootElement, "Red", "network", facts);
         AddArray(doc.RootElement, "CS2", "cs2", facts);
+        AddArray(doc.RootElement, "Procesos muestra 1", "processFirst", facts);
+        AddArray(doc.RootElement, "Procesos muestra 2", "processSecond", facts);
+        AddObject(doc.RootElement, "Muestreo de procesos", "processMeta", facts);
         if (!facts.Any(f => f.Category == "CPU")) warnings.Add("No se pudo obtener información del procesador mediante CIM.");
         if (!facts.Any(f => f.Category == "GPU")) warnings.Add("No se pudo obtener información gráfica mediante CIM.");
         if (!facts.Any(f => f.Category == "Disco físico")) warnings.Add("No se pudo obtener información del disco físico.");
         if (!facts.Any(f => f.Category == "Particiones")) warnings.Add("No se pudo obtener información de las particiones.");
         if (!facts.Any(f => f.Category == "Volúmenes")) warnings.Add("No se pudo obtener información de los volúmenes.");
-        if (!facts.Any(f => f.Category == "SMART")) warnings.Add("La información SMART no está disponible mediante root/wmi.");
+        if (!facts.Any(f => f.Category == "SMART predictivo")) warnings.Add("La información SMART no está disponible mediante root/wmi.");
+        if (!facts.Any(f => f.Category == "Almacenamiento")) warnings.Add("Get-PhysicalDisk no devolvió discos; NVMe y HealthStatus quedan UNKNOWN.");
+        if (!facts.Any(f => f.Category == "Contadores de confiabilidad")) warnings.Add("Get-StorageReliabilityCounter no devolvió contadores; el SMART completo queda UNKNOWN (HealthStatus no es SMART).");
+        if (!facts.Any(f => f.Category == "TRIM")) warnings.Add("No se pudo leer DisableDeleteNotify; el estado de TRIM queda UNKNOWN.");
+        if (!facts.Any(f => f.Category == "Plan de energía")) warnings.Add("No se pudo leer el plan de energía activo.");
+        if (!facts.Any(f => f.Category == "Procesos muestra 2")) warnings.Add("No hubo segunda muestra de procesos; la CPU instantánea queda UNKNOWN.");
         return new SystemAuditReport(DateTimeOffset.Now, Environment.MachineName, facts, warnings);
     }
 
@@ -124,6 +160,19 @@ $result | ConvertTo-Json -Depth 8 -Compress
         } else if (item.ValueKind == JsonValueKind.Object) {
             foreach (var p in item.EnumerateObject()) AddFact(category, p.Name, p.Value, facts);
         }
+    }
+    private static void AddScalar(JsonElement root, string category, string name, string property, List<AuditFact> facts)
+    {
+        if (!root.TryGetProperty(property, out var item)) return;
+        if (item.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined) return;
+
+        string? value = item.ValueKind == JsonValueKind.String
+            ? item.GetString()
+            : item.GetRawText();
+
+        if (string.IsNullOrWhiteSpace(value)) return;
+
+        facts.Add(new AuditFact(category, name, value, "PowerShell / CIM", "SYSTEM_REPORTED"));
     }
     private static void AddFact(string category, string name, JsonElement value, List<AuditFact> facts)
     {
