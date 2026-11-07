@@ -1,0 +1,353 @@
+
+using System.Globalization;
+using EvoOptimizer.Core.Audit;
+
+namespace EvoOptimizer.Core.Diagnosis;
+
+public enum DiagnosticSeverity
+{
+    Information,
+    Warning,
+    Critical
+}
+
+public sealed record DiagnosticFinding(
+    string Id,
+    DiagnosticSeverity Severity,
+    string Title,
+    string Explanation,
+    string Evidence,
+    string Confidence,
+    string Recommendation
+);
+
+public sealed record DiagnosticReport(
+    DateTimeOffset AnalyzedAt,
+    string ComputerName,
+    IReadOnlyList<DiagnosticFinding> Findings,
+    bool PerformanceBenchmarkRequired
+);
+
+/// <summary>
+/// Analiza evidencia de hardware y sistema.
+/// No inventa cuellos de botella ni modifica Windows.
+/// </summary>
+public sealed class AdaptiveDiagnosticEngine
+{
+    public DiagnosticReport Analyze(SystemAuditReport audit)
+    {
+        ArgumentNullException.ThrowIfNull(audit);
+
+        var findings = new List<DiagnosticFinding>();
+
+        AnalyzeMemory(audit, findings);
+        AnalyzeStorage(audit, findings);
+        AnalyzeProcessor(audit, findings);
+        AnalyzeGraphics(audit, findings);
+        AnalyzeDisplay(audit, findings);
+        AnalyzeCs2(audit, findings);
+
+        findings.Add(new DiagnosticFinding(
+            "BENCHMARK_REQUIRED",
+            DiagnosticSeverity.Information,
+            "Falta evidencia de rendimiento real",
+            "La auditoría CIM identifica el hardware, pero no mide FPS, 1% lows ni tiempos de fotograma.",
+            "No se encontraron mediciones PresentMon asociadas a esta auditoría.",
+            "HIGH",
+            "Ejecutar una captura de rendimiento de CS2 con PresentMon antes de diagnosticar un cuello de botella."
+        ));
+
+        return new DiagnosticReport(
+            DateTimeOffset.Now,
+            audit.ComputerName,
+            findings,
+            PerformanceBenchmarkRequired: true
+        );
+    }
+
+    private static void AnalyzeMemory(
+        SystemAuditReport audit,
+        List<DiagnosticFinding> findings)
+    {
+        var totalBytes = FindNumber(
+            audit, "Equipo", "TotalPhysicalMemory");
+
+        if (totalBytes is null || totalBytes <= 0 || !double.IsFinite(totalBytes.Value))
+        {
+            totalBytes = SumNumbers(audit, "RAM", "Capacity");
+        }
+
+        if (totalBytes is null || totalBytes <= 0 || !double.IsFinite(totalBytes.Value))
+        {
+            AddUnknown(findings, "MEMORY_UNKNOWN", "Memoria RAM");
+        }
+        else
+        {
+            var gib = totalBytes.Value / 1024d / 1024d / 1024d;
+
+            findings.Add(new DiagnosticFinding(
+                "MEMORY_CAPACITY",
+                DiagnosticSeverity.Information,
+                $"Memoria instalada: {gib:F1} GiB",
+                "Capacidad física informada por Windows. No representa memoria libre ni presión de memoria durante CS2.",
+                $"Memoria física detectada: {totalBytes.Value:N0} bytes.",
+                "HIGH",
+                "Medir memoria disponible, memoria comprometida y paginación durante una partida antes de recomendar cambios."
+            ));
+        }
+
+        var modules = audit.Facts
+            .Where(f => f.Category == "RAM")
+            .GroupBy(f => f.Name.StartsWith("[", StringComparison.Ordinal) && f.Name.IndexOf(']') > 1
+                ? f.Name[..(f.Name.IndexOf(']') + 1)]
+                : string.Empty)
+            .ToList();
+
+        if (modules.Count == 0)
+        {
+            AddUnknown(findings, "MEMORY_CLOCK_UNKNOWN", "Velocidad de la memoria RAM");
+            return;
+        }
+
+        foreach (var module in modules)
+        {
+            var moduleId = module.Key.Length > 0 ? module.Key.Trim('[', ']') : "UNINDEXED";
+            var moduleName = module.Key.Length > 0 ? $"Módulo RAM {module.Key}" : "Módulo RAM sin índice";
+            var rated = ParseNumber(module.FirstOrDefault(f =>
+                f.Name[module.Key.Length..].Trim().Equals("Speed", StringComparison.OrdinalIgnoreCase))?.Value);
+            var configured = ParseNumber(module.FirstOrDefault(f =>
+                f.Name[module.Key.Length..].Trim().Equals("ConfiguredClockSpeed", StringComparison.OrdinalIgnoreCase))?.Value);
+
+            if (rated is null || configured is null || rated <= 0 || configured <= 0 ||
+                !double.IsFinite(rated.Value) || !double.IsFinite(configured.Value))
+            {
+                AddUnknown(findings, $"MEMORY_CLOCK_UNKNOWN_{moduleId}", $"{moduleName}: velocidad");
+                continue;
+            }
+
+            if (configured < rated)
+            {
+                findings.Add(new DiagnosticFinding(
+                    $"MEMORY_CLOCK_DIFFERENCE_{moduleId}",
+                    DiagnosticSeverity.Warning,
+                    $"{moduleName}: velocidad configurada inferior a la nominal",
+                    "Windows informa una velocidad configurada inferior a la velocidad nominal declarada. Esto no demuestra por sí solo una pérdida de FPS.",
+                    $"{moduleName}. Velocidad nominal informada: {rated} MT/s. Configurada: {configured} MT/s.",
+                    "SYSTEM_REPORTED",
+                    "Verificar compatibilidad, BIOS y configuración de memoria antes de modificar cualquier ajuste."
+                ));
+            }
+            else
+            {
+                findings.Add(new DiagnosticFinding(
+                    $"MEMORY_CLOCK_OK_{moduleId}",
+                    DiagnosticSeverity.Information,
+                    $"{moduleName}: sin reducción de velocidad configurada",
+                    "La velocidad configurada informada es igual o superior a la nominal declarada. Esto no permite evaluar la estabilidad ni el rendimiento durante CS2.",
+                    $"{moduleName}. Velocidad nominal informada: {rated} MT/s. Configurada: {configured} MT/s.",
+                    "SYSTEM_REPORTED",
+                    "No se requiere una acción por velocidad según estos datos."
+                ));
+            }
+        }
+    }
+
+    private static void AnalyzeStorage(
+        SystemAuditReport audit,
+        List<DiagnosticFinding> findings)
+    {
+        var size = FindNumber(audit, "Discos", "Size");
+        var free = FindNumber(audit, "Discos", "FreeSpace");
+
+        if (size is null || free is null || size <= 0)
+        {
+            AddUnknown(findings, "STORAGE_UNKNOWN", "Almacenamiento");
+            return;
+        }
+
+        var percentage = free.Value / size.Value * 100d;
+
+        var severity = percentage < 10
+            ? DiagnosticSeverity.Critical
+            : percentage < 20
+                ? DiagnosticSeverity.Warning
+                : DiagnosticSeverity.Information;
+
+        findings.Add(new DiagnosticFinding(
+            "SYSTEM_DISK_SPACE",
+            severity,
+            $"Espacio libre: {percentage:F1}%",
+            "Se evalúa la capacidad libre del volumen detectado. No implica que el disco sea un cuello de botella de CS2.",
+            $"Espacio libre: {free.Value:N0} bytes de {size.Value:N0} bytes.",
+            "SYSTEM_REPORTED",
+            percentage < 20
+                ? "Liberar espacio de forma segura y conservar margen para Windows y actualizaciones."
+                : "No se requiere una acción por espacio libre según esta medición."
+        ));
+    }
+
+    private static void AnalyzeProcessor(
+        SystemAuditReport audit,
+        List<DiagnosticFinding> findings)
+    {
+        var name = FindValue(audit, "CPU", "Name");
+        var cores = FindValue(audit, "CPU", "NumberOfCores");
+        var threads = FindValue(audit, "CPU", "NumberOfLogicalProcessors");
+
+        if (name is null)
+        {
+            AddUnknown(findings, "CPU_UNKNOWN", "Procesador");
+            return;
+        }
+
+        findings.Add(new DiagnosticFinding(
+            "CPU_PROFILE",
+            DiagnosticSeverity.Information,
+            "Procesador identificado",
+            "La identificación del procesador permite seleccionar futuras pruebas. No determina por sí sola el rendimiento en CS2.",
+            $"{name}; núcleos: {cores ?? "desconocido"}; procesadores lógicos: {threads ?? "desconocido"}.",
+            "SYSTEM_REPORTED",
+            "Medir utilización por núcleo, frecuencias efectivas, temperatura y frametimes durante una partida."
+        ));
+    }
+
+    private static void AnalyzeGraphics(
+        SystemAuditReport audit,
+        List<DiagnosticFinding> findings)
+    {
+        var gpus = audit.Facts
+            .Where(f => f.Category == "GPU" && f.Name.Contains("Name", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        if (gpus.Count == 0)
+        {
+            AddUnknown(findings, "GPU_UNKNOWN", "Gráficos");
+            return;
+        }
+
+        foreach (var gpu in gpus)
+        {
+            findings.Add(new DiagnosticFinding(
+                "GPU_PROFILE",
+                DiagnosticSeverity.Information,
+                $"GPU identificada: {gpu.Value ?? "desconocida"}",
+                "La auditoría identifica el adaptador gráfico. AdapterRAM no se considera VRAM dedicada fiable en gráficos integrados.",
+                $"{gpu.Name}: {gpu.Value ?? "sin dato"}.",
+                gpu.Confidence,
+                "Medir carga de GPU, frecuencia, temperatura y tiempos de fotograma durante CS2 antes de decidir ajustes gráficos."
+            ));
+        }
+    }
+
+    private static void AnalyzeDisplay(
+        SystemAuditReport audit,
+        List<DiagnosticFinding> findings)
+    {
+        var refresh = FindNumber(audit, "GPU", "CurrentRefreshRate");
+
+        if (refresh is null || refresh <= 0)
+            return;
+
+        findings.Add(new DiagnosticFinding(
+            "DISPLAY_REFRESH",
+            DiagnosticSeverity.Information,
+            $"Frecuencia informada: {refresh.Value:F0} Hz",
+            "Es el valor informado por Windows durante la auditoría; puede no representar todos los modos disponibles del monitor.",
+            $"CurrentRefreshRate: {refresh.Value:F0} Hz.",
+            "SYSTEM_REPORTED",
+            "Contrastar con la configuración avanzada de pantalla y el modo activo del monitor."
+        ));
+    }
+
+    private static void AnalyzeCs2(
+        SystemAuditReport audit,
+        List<DiagnosticFinding> findings)
+    {
+        var process = audit.Facts.FirstOrDefault(f =>
+            f.Category == "CS2" &&
+            f.Name.Contains("ProcessName", StringComparison.OrdinalIgnoreCase));
+
+        findings.Add(new DiagnosticFinding(
+            "CS2_PROCESS_STATE",
+            DiagnosticSeverity.Information,
+            process is null
+                ? "CS2 no estaba detectado durante la auditoría"
+                : "CS2 estaba ejecutándose durante la auditoría",
+            "La presencia del proceso no demuestra rendimiento ni estabilidad.",
+            process?.Value ?? "No se detectó el proceso cs2 en esa captura.",
+            "SYSTEM_REPORTED",
+            "Realizar una captura específica mientras se ejecuta una partida o benchmark."
+        ));
+    }
+
+    private static string? FindValue(
+        SystemAuditReport audit,
+        string category,
+        string name)
+    {
+        return audit.Facts.FirstOrDefault(f =>
+            f.Category == category &&
+            f.Name.Contains(name, StringComparison.OrdinalIgnoreCase))?.Value;
+    }
+
+    private static double? FindNumber(
+        SystemAuditReport audit,
+        string category,
+        string name)
+    {
+        var values = audit.Facts
+            .Where(f => f.Category == category &&
+                        f.Name.Contains(name, StringComparison.OrdinalIgnoreCase))
+            .Select(f => ParseNumber(f.Value))
+            .Where(v => v.HasValue)
+            .ToList();
+
+        return values.FirstOrDefault();
+    }
+
+    private static double? SumNumbers(
+        SystemAuditReport audit,
+        string category,
+        string name)
+    {
+        var values = audit.Facts
+            .Where(f => f.Category == category &&
+                        f.Name.Contains(name, StringComparison.OrdinalIgnoreCase))
+            .Select(f => ParseNumber(f.Value))
+            .Where(v => v.HasValue)
+            .Select(v => v!.Value)
+            .ToList();
+
+        return values.Count == 0 ? null : values.Sum();
+    }
+
+    private static double? ParseNumber(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return null;
+
+        return double.TryParse(
+            value,
+            NumberStyles.Float,
+            CultureInfo.InvariantCulture,
+            out var result)
+            ? result
+            : null;
+    }
+
+    private static void AddUnknown(
+        List<DiagnosticFinding> findings,
+        string id,
+        string component)
+    {
+        findings.Add(new DiagnosticFinding(
+            id,
+            DiagnosticSeverity.Information,
+            $"{component}: evidencia insuficiente",
+            "No hay datos suficientes para formular un diagnóstico fiable.",
+            "Dato ausente en la auditoría.",
+            "UNKNOWN",
+            "Obtener una medición válida antes de recomendar cambios."
+        ));
+    }
+}

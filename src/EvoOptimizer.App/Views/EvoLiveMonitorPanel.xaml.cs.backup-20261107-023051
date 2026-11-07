@@ -1,0 +1,27 @@
+﻿using System.Windows;
+using System.Windows.Controls;
+using EvoOptimizer.App.ViewModels;
+
+namespace EvoOptimizer.App.Views;
+
+public partial class EvoLiveMonitorPanel : UserControl
+{
+    public EvoLiveMonitorPanel()
+    {
+        InitializeComponent();
+    }
+
+    private async void StartMonitoring_Click(
+        object sender, RoutedEventArgs e)
+    {
+        if (DataContext is EvoControlCenterViewModel vm)
+            await vm.StartAsync();
+    }
+
+    private async void StopMonitoring_Click(
+        object sender, RoutedEventArgs e)
+    {
+        if (DataContext is EvoControlCenterViewModel vm)
+            await vm.StopAsync();
+    }
+}

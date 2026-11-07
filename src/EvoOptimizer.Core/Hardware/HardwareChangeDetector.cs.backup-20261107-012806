@@ -1,0 +1,212 @@
+﻿namespace EvoOptimizer.Core.Hardware;
+
+public enum HardwareChangeKind
+{
+    CpuChanged,
+    GpuChanged,
+    MotherboardChanged,
+    MemoryCapacityChanged,
+    MemoryTypeChanged,
+    MemorySpeedChanged,
+    StorageConfigurationChanged,
+    GpuDriverChanged,
+    OperatingSystemChanged,
+    OperatingSystemBuildChanged,
+    DisplayConfigurationChanged,
+    PowerPlanChanged
+}
+
+public enum HardwareComparisonStatus
+{
+    Unchanged,
+    HardwareChanged,
+    EnvironmentChanged,
+    HardwareAndEnvironmentChanged,
+    IncompleteEvidence
+}
+
+public sealed record HardwareChange(
+    HardwareChangeKind Kind,
+    string Field,
+    string PreviousValue,
+    string CurrentValue,
+    bool AffectsHardwareIdentity);
+
+public sealed record HardwareChangeReport(
+    HardwareComparisonStatus Status,
+    IReadOnlyList<HardwareChange> Changes,
+    IReadOnlyList<string> UnverifiedFields,
+    bool BenchmarksRemainHardwareComparable,
+    bool BenchmarksRemainEnvironmentComparable,
+    DateTimeOffset ComparedAt);
+
+public sealed class HardwareChangeDetector
+{
+    public HardwareChangeReport Compare(
+        HardwareFingerprintInput previousHardware,
+        EnvironmentFingerprintInput previousEnvironment,
+        HardwareFingerprintInput currentHardware,
+        EnvironmentFingerprintInput currentEnvironment)
+    {
+        ArgumentNullException.ThrowIfNull(previousHardware);
+        ArgumentNullException.ThrowIfNull(previousEnvironment);
+        ArgumentNullException.ThrowIfNull(currentHardware);
+        ArgumentNullException.ThrowIfNull(currentEnvironment);
+
+        var changes = new List<HardwareChange>();
+        var unverified = new List<string>();
+
+        CompareText(
+            changes, unverified, HardwareChangeKind.CpuChanged,
+            "CPU", previousHardware.CpuModel, currentHardware.CpuModel, true);
+
+        CompareText(
+            changes, unverified, HardwareChangeKind.GpuChanged,
+            "GPU", previousHardware.GpuModel, currentHardware.GpuModel, true);
+
+        CompareText(
+            changes, unverified, HardwareChangeKind.MotherboardChanged,
+            "Motherboard", previousHardware.MotherboardModel,
+            currentHardware.MotherboardModel, true);
+
+        CompareNumber(
+            changes, unverified, HardwareChangeKind.MemoryCapacityChanged,
+            "RAM capacity", previousHardware.TotalMemoryBytes,
+            currentHardware.TotalMemoryBytes, true);
+
+        CompareText(
+            changes, unverified, HardwareChangeKind.MemoryTypeChanged,
+            "Memory type", previousHardware.MemoryType,
+            currentHardware.MemoryType, true);
+
+        CompareNumber(
+            changes, unverified, HardwareChangeKind.MemorySpeedChanged,
+            "Memory speed", previousHardware.MemorySpeedMhz,
+            currentHardware.MemorySpeedMhz, true);
+
+        CompareText(
+            changes, unverified,
+            HardwareChangeKind.StorageConfigurationChanged,
+            "Storage configuration",
+            previousHardware.StorageConfiguration,
+            currentHardware.StorageConfiguration, true);
+
+        CompareText(
+            changes, unverified, HardwareChangeKind.GpuDriverChanged,
+            "GPU driver", previousEnvironment.GpuDriverVersion,
+            currentEnvironment.GpuDriverVersion, false);
+
+        CompareText(
+            changes, unverified, HardwareChangeKind.OperatingSystemChanged,
+            "Operating system", previousEnvironment.OperatingSystem,
+            currentEnvironment.OperatingSystem, false);
+
+        CompareText(
+            changes, unverified,
+            HardwareChangeKind.OperatingSystemBuildChanged,
+            "Operating system build",
+            previousEnvironment.OperatingSystemBuild,
+            currentEnvironment.OperatingSystemBuild, false);
+
+        CompareText(
+            changes, unverified,
+            HardwareChangeKind.DisplayConfigurationChanged,
+            "Display configuration",
+            previousEnvironment.DisplayConfiguration,
+            currentEnvironment.DisplayConfiguration, false);
+
+        CompareText(
+            changes, unverified, HardwareChangeKind.PowerPlanChanged,
+            "Power plan", previousEnvironment.PowerPlan,
+            currentEnvironment.PowerPlan, false);
+
+        bool hardwareChanged =
+            changes.Any(x => x.AffectsHardwareIdentity);
+
+        bool environmentChanged = changes.Count > 0;
+
+        var status = unverified.Count > 0
+            ? HardwareComparisonStatus.IncompleteEvidence
+            : hardwareChanged && environmentChanged
+                ? HardwareComparisonStatus.HardwareAndEnvironmentChanged
+                : hardwareChanged
+                    ? HardwareComparisonStatus.HardwareChanged
+                    : environmentChanged
+                        ? HardwareComparisonStatus.EnvironmentChanged
+                        : HardwareComparisonStatus.Unchanged;
+
+        return new HardwareChangeReport(
+            status,
+            changes,
+            unverified,
+            !hardwareChanged && unverified.Count == 0,
+            changes.Count == 0 && unverified.Count == 0,
+            DateTimeOffset.UtcNow);
+    }
+
+    private static void CompareText(
+        List<HardwareChange> changes,
+        List<string> unverified,
+        HardwareChangeKind kind,
+        string field,
+        string? previous,
+        string? current,
+        bool affectsHardware)
+    {
+        if (IsUnknown(previous) || IsUnknown(current))
+        {
+            unverified.Add(field);
+            return;
+        }
+
+        var oldValue = Normalize(previous!);
+        var newValue = Normalize(current!);
+
+        if (!string.Equals(
+            oldValue, newValue, StringComparison.OrdinalIgnoreCase))
+        {
+            changes.Add(new HardwareChange(
+                kind, field, previous!, current!, affectsHardware));
+        }
+    }
+
+    private static void CompareNumber<T>(
+        List<HardwareChange> changes,
+        List<string> unverified,
+        HardwareChangeKind kind,
+        string field,
+        T previous,
+        T current,
+        bool affectsHardware)
+        where T : struct, IComparable<T>
+    {
+        if (previous.CompareTo(default) <= 0 ||
+            current.CompareTo(default) <= 0)
+        {
+            unverified.Add(field);
+            return;
+        }
+
+        if (!previous.Equals(current))
+        {
+            changes.Add(new HardwareChange(
+                kind,
+                field,
+                previous.ToString() ?? "UNKNOWN",
+                current.ToString() ?? "UNKNOWN",
+                affectsHardware));
+        }
+    }
+
+    private static bool IsUnknown(string? value) =>
+        string.IsNullOrWhiteSpace(value) ||
+        string.Equals(value.Trim(), "UNKNOWN",
+            StringComparison.OrdinalIgnoreCase);
+
+    private static string Normalize(string value) =>
+        string.Join(
+            " ",
+            value.Trim().ToUpperInvariant().Split(
+                (char[]?)null,
+                StringSplitOptions.RemoveEmptyEntries));
+}

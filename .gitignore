@@ -1,9 +1,18 @@
-﻿bin/
-obj/
-.vs/
-TestResults/
-.env
-.env.*
-!.env.example
+﻿# .NET
+[Bb]in/
+[Oo]bj/
 *.user
 *.suo
+*.cache
+
+# Visual Studio
+.vs/
+*.userosscache
+*.sln.docstates
+
+# Rider
+.idea/
+
+# Build outputs
+artifacts/
+TestResults/

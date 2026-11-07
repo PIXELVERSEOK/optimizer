@@ -4,4 +4,7 @@
     <Project Path="src/EvoOptimizer.Core/EvoOptimizer.Core.csproj" />
     <Project Path="src/EvoOptimizer.Infrastructure/EvoOptimizer.Infrastructure.csproj" />
   </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/EvoOptimizer.Core.Tests/EvoOptimizer.Core.Tests.csproj" />
+  </Folder>
 </Solution>

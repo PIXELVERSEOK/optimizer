@@ -1,0 +1,582 @@
+namespace EvoOptimizer.Infrastructure.Optimization;
+
+public enum OptimizationPriority
+{
+    Critical,
+    High,
+    Medium,
+    Low,
+    Informational
+}
+
+public enum OptimizationRisk
+{
+    None,
+    Low,
+    Medium,
+    High
+}
+
+public enum OptimizationArea
+{
+    Memory,
+    Processor,
+    Graphics,
+    Gaming,
+    BackgroundActivity,
+    Storage,
+    Thermal,
+    Measurement
+}
+
+public sealed record OptimizationDiagnosticInput(
+    double SystemCpuPercent,
+    double? Cs2CpuPercent,
+    double MemoryUsagePercent,
+    double AvailableMemoryMb,
+    double GpuUsagePercent,
+    double FrametimeP99Ms,
+    double AverageFps,
+    double OnePercentLowFps,
+    double PointOnePercentLowFps,
+    double StutterRatePercent,
+    double DiskFreePercent,
+    double? CpuTemperatureCelsius,
+    double? GpuTemperatureCelsius,
+    int ActiveProcessCount,
+    bool? BackgroundCaptureEnabled,
+    bool? HistoricalCaptureEnabled,
+    bool? GameModeEnabled,
+    bool HasReliableTelemetry,
+    bool HasReliableGpuTelemetry);
+
+public sealed record OptimizationRecommendation(
+    string Id,
+    string Title,
+    string Description,
+    OptimizationArea Area,
+    OptimizationPriority Priority,
+    OptimizationRisk Risk,
+    int ImpactScore,
+    int ConfidenceScore,
+    bool IsReversible,
+    bool RequiresUserApproval,
+    string ActionKey,
+    IReadOnlyList<string> Evidence,
+    IReadOnlyList<string> Preconditions);
+
+public sealed record AdaptiveOptimizationReport(
+    DateTimeOffset GeneratedAt,
+    int TotalRecommendations,
+    int CriticalCount,
+    int HighCount,
+    int MediumCount,
+    int LowCount,
+    IReadOnlyList<OptimizationRecommendation> Recommendations,
+    IReadOnlyList<string> GeneralWarnings);
+
+public sealed class AdaptiveOptimizationEngine
+{
+    public AdaptiveOptimizationReport Analyze(
+        OptimizationDiagnosticInput input)
+    {
+        ArgumentNullException.ThrowIfNull(input);
+
+        Validate(input);
+
+        var recommendations =
+            new List<OptimizationRecommendation>();
+
+        var warnings = new List<string>();
+
+        if (!input.HasReliableTelemetry)
+        {
+            warnings.Add(
+                "Telemetría incompleta: las recomendaciones basadas en CPU y memoria tienen confianza limitada.");
+
+            Add(recommendations,
+                "measurement.collect-telemetry",
+                "Mejorar la captura de telemetría",
+                "Registrar CPU, memoria y actividad de procesos durante una sesión real de CS2.",
+                OptimizationArea.Measurement,
+                OptimizationPriority.High,
+                OptimizationRisk.None,
+                75, 95, false,
+                "measurement.capture",
+                new[] { "No se dispone de telemetría suficientemente fiable." },
+                new[] { "Realizar una captura durante una partida o benchmark." });
+        }
+
+        if (input.HasReliableTelemetry)
+        {
+            AnalyzeMemory(input, recommendations);
+            AnalyzeProcessor(input, recommendations);
+            AnalyzeBackgroundActivity(input, recommendations);
+            AnalyzeThermal(input, recommendations);
+        }
+
+        AnalyzeGraphics(input, recommendations);
+        AnalyzeFrametime(input, recommendations);
+        AnalyzeStorage(input, recommendations);
+        AnalyzeGamingSettings(input, recommendations);
+
+        var ordered = recommendations
+            .OrderByDescending(x => PriorityRank(x.Priority))
+            .ThenByDescending(x => x.ImpactScore)
+            .ThenByDescending(x => x.ConfidenceScore)
+            .ToArray();
+
+        return new AdaptiveOptimizationReport(
+            DateTimeOffset.UtcNow,
+            ordered.Length,
+            ordered.Count(x => x.Priority == OptimizationPriority.Critical),
+            ordered.Count(x => x.Priority == OptimizationPriority.High),
+            ordered.Count(x => x.Priority == OptimizationPriority.Medium),
+            ordered.Count(x => x.Priority == OptimizationPriority.Low),
+            ordered,
+            warnings);
+    }
+
+    private static void AnalyzeMemory(
+        OptimizationDiagnosticInput input,
+        List<OptimizationRecommendation> output)
+    {
+        if (input.MemoryUsagePercent >= 92 ||
+            input.AvailableMemoryMb <= 700)
+        {
+            Add(output,
+                "memory.critical-pressure",
+                "Investigar presión crítica de memoria",
+                "La memoria disponible es muy baja. Identificar qué procesos consumen RAM antes de modificar el sistema.",
+                OptimizationArea.Memory,
+                OptimizationPriority.Critical,
+                OptimizationRisk.None,
+                95, 90, false,
+                "analysis.inspect-memory",
+                new[]
+                {
+                    $"Memoria utilizada: {input.MemoryUsagePercent:F1}%.",
+                    $"Memoria disponible: {input.AvailableMemoryMb:F0} MB."
+                },
+                new[] { "Revisar consumo por proceso y confirmar que no sea una carga temporal." });
+        }
+        else if (input.MemoryUsagePercent >= 85 ||
+                 input.AvailableMemoryMb <= 1500)
+        {
+            Add(output,
+                "memory.high-pressure",
+                "Revisar consumo elevado de RAM",
+                "La memoria disponible puede limitar la estabilidad durante cargas intensivas.",
+                OptimizationArea.Memory,
+                OptimizationPriority.High,
+                OptimizationRisk.None,
+                75, 85, false,
+                "analysis.inspect-memory",
+                new[]
+                {
+                    $"Memoria utilizada: {input.MemoryUsagePercent:F1}%.",
+                    $"Memoria disponible: {input.AvailableMemoryMb:F0} MB."
+                },
+                new[] { "Identificar procesos con consumo elevado antes de cerrarlos." });
+        }
+    }
+
+    private static void AnalyzeProcessor(
+        OptimizationDiagnosticInput input,
+        List<OptimizationRecommendation> output)
+    {
+        if (input.SystemCpuPercent >= 95)
+        {
+            Add(output,
+                "cpu.system-saturation",
+                "Investigar saturación del procesador",
+                "La CPU del sistema está cerca de saturarse. Identificar procesos competidores y comprobar si el comportamiento se repite.",
+                OptimizationArea.Processor,
+                OptimizationPriority.High,
+                OptimizationRisk.None,
+                90, 85, false,
+                "analysis.inspect-cpu",
+                new[]
+                {
+                    $"CPU del sistema: {input.SystemCpuPercent:F1}%."
+                },
+                new[]
+                {
+                    "Comparar la carga de CS2 con el resto de procesos.",
+                    "No modificar afinidad ni prioridades automáticamente."
+                });
+        }
+        else if (input.SystemCpuPercent >= 85)
+        {
+            Add(output,
+                "cpu.high-load",
+                "Revisar carga elevada de CPU",
+                "La carga del procesador es elevada. Conviene identificar si proviene del juego o de procesos externos.",
+                OptimizationArea.Processor,
+                OptimizationPriority.Medium,
+                OptimizationRisk.None,
+                65, 80, false,
+                "analysis.inspect-cpu",
+                new[]
+                {
+                    $"CPU del sistema: {input.SystemCpuPercent:F1}%."
+                },
+                new[] { "Repetir la medición en una sesión comparable." });
+        }
+    }
+
+    private static void AnalyzeBackgroundActivity(
+        OptimizationDiagnosticInput input,
+        List<OptimizationRecommendation> output)
+    {
+        if (input.SystemCpuPercent >= 75 &&
+            input.Cs2CpuPercent.HasValue &&
+            input.Cs2CpuPercent.Value < 60)
+        {
+            Add(output,
+                "background.cpu-competition",
+                "Investigar procesos en segundo plano",
+                "Existe una diferencia importante entre la carga total del sistema y la atribuida a CS2. Identificar los procesos responsables antes de tomar medidas.",
+                OptimizationArea.BackgroundActivity,
+                OptimizationPriority.High,
+                OptimizationRisk.None,
+                80, 75, false,
+                "analysis.inspect-background",
+                new[]
+                {
+                    $"CPU del sistema: {input.SystemCpuPercent:F1}%.",
+                    $"CPU de CS2: {input.Cs2CpuPercent.Value:F1}%.",
+                    $"Procesos activos: {input.ActiveProcessCount}."
+                },
+                new[]
+                {
+                    "Revisar consumo individual de CPU.",
+                    "No cerrar procesos del sistema ni servicios críticos."
+                });
+        }
+    }
+
+    private static void AnalyzeThermal(
+        OptimizationDiagnosticInput input,
+        List<OptimizationRecommendation> output)
+    {
+        if (input.CpuTemperatureCelsius is >= 95)
+        {
+            Add(output,
+                "thermal.cpu-critical",
+                "Investigar temperatura crítica de CPU",
+                "La temperatura informada es muy elevada. Comprobar refrigeración y posibles límites térmicos.",
+                OptimizationArea.Thermal,
+                OptimizationPriority.Critical,
+                OptimizationRisk.None,
+                100, 90, false,
+                "analysis.inspect-thermal",
+                new[]
+                {
+                    $"Temperatura CPU: {input.CpuTemperatureCelsius:F1} °C."
+                },
+                new[] { "Confirmar que la lectura del sensor sea válida." });
+        }
+        else if (input.CpuTemperatureCelsius is >= 85)
+        {
+            Add(output,
+                "thermal.cpu-high",
+                "Revisar temperatura de CPU",
+                "La temperatura elevada podría reducir el margen térmico disponible.",
+                OptimizationArea.Thermal,
+                OptimizationPriority.Medium,
+                OptimizationRisk.None,
+                70, 80, false,
+                "analysis.inspect-thermal",
+                new[]
+                {
+                    $"Temperatura CPU: {input.CpuTemperatureCelsius:F1} °C."
+                },
+                new[] { "Comparar temperatura, frecuencia y carga durante la sesión." });
+        }
+
+        if (input.GpuTemperatureCelsius is >= 90)
+        {
+            Add(output,
+                "thermal.gpu-high",
+                "Revisar temperatura de GPU",
+                "La temperatura informada merece una revisión de refrigeración y comportamiento térmico.",
+                OptimizationArea.Thermal,
+                OptimizationPriority.High,
+                OptimizationRisk.None,
+                85, 85, false,
+                "analysis.inspect-thermal",
+                new[]
+                {
+                    $"Temperatura GPU: {input.GpuTemperatureCelsius:F1} °C."
+                },
+                new[] { "Confirmar sensor y límites térmicos del fabricante." });
+        }
+    }
+
+    private static void AnalyzeGraphics(
+        OptimizationDiagnosticInput input,
+        List<OptimizationRecommendation> output)
+    {
+        if (!input.HasReliableGpuTelemetry)
+        {
+            Add(output,
+                "gpu.telemetry-missing",
+                "Completar telemetría de GPU",
+                "No hay datos fiables de utilización de GPU. No es posible afirmar si CS2 está limitado por GPU o CPU.",
+                OptimizationArea.Graphics,
+                OptimizationPriority.Medium,
+                OptimizationRisk.None,
+                70, 95, false,
+                "analysis.inspect-gpu",
+                new[] { "Utilización de GPU no disponible o no fiable." },
+                new[] { "Obtener datos de GPU mediante una fuente compatible y no invasiva." });
+
+            return;
+        }
+
+        if (input.GpuUsagePercent >= 95 &&
+            input.FrametimeP99Ms >= 16.7)
+        {
+            Add(output,
+                "gpu.possible-bottleneck",
+                "Investigar posible límite de GPU",
+                "La utilización de GPU es muy elevada y el P99 de frametime también. Comparar con una prueba controlada a menor resolución o carga gráfica.",
+                OptimizationArea.Graphics,
+                OptimizationPriority.High,
+                OptimizationRisk.None,
+                85, 75, false,
+                "analysis.compare-graphics-load",
+                new[]
+                {
+                    $"GPU: {input.GpuUsagePercent:F1}%.",
+                    $"P99 frametime: {input.FrametimeP99Ms:F2} ms."
+                },
+                new[]
+                {
+                    "Repetir la misma escena y configuración.",
+                    "No asumir que una GPU al 95% demuestra por sí sola un cuello de botella."
+                });
+        }
+    }
+
+    private static void AnalyzeFrametime(
+        OptimizationDiagnosticInput input,
+        List<OptimizationRecommendation> output)
+    {
+        if (input.StutterRatePercent >= 5 ||
+            input.FrametimeP99Ms >= 30)
+        {
+            Add(output,
+                "fps.severe-instability",
+                "Priorizar investigación de frametimes",
+                "La sesión muestra inestabilidad importante. Revisar eventos de stutter y correlacionarlos con telemetría.",
+                OptimizationArea.Gaming,
+                OptimizationPriority.High,
+                OptimizationRisk.None,
+                95, 90, false,
+                "analysis.correlate-frametime",
+                new[]
+                {
+                    $"Stutter rate: {input.StutterRatePercent:F2}%.",
+                    $"P99 frametime: {input.FrametimeP99Ms:F2} ms.",
+                    $"FPS promedio: {input.AverageFps:F1}.",
+                    $"1% low: {input.OnePercentLowFps:F1}.",
+                    $"0.1% low: {input.PointOnePercentLowFps:F1}."
+                },
+                new[] { "Usar una captura suficientemente larga y comparable." });
+        }
+        else if (input.StutterRatePercent >= 2 ||
+                 input.FrametimeP99Ms >= 20)
+        {
+            Add(output,
+                "fps.moderate-instability",
+                "Investigar variabilidad de FPS",
+                "Hay indicios de variabilidad en los frametimes. Conviene comparar sesiones y revisar los eventos más lentos.",
+                OptimizationArea.Gaming,
+                OptimizationPriority.Medium,
+                OptimizationRisk.None,
+                65, 80, false,
+                "analysis.correlate-frametime",
+                new[]
+                {
+                    $"Stutter rate: {input.StutterRatePercent:F2}%.",
+                    $"P99 frametime: {input.FrametimeP99Ms:F2} ms."
+                },
+                new[] { "Comparar con una captura de referencia." });
+        }
+    }
+
+    private static void AnalyzeStorage(
+        OptimizationDiagnosticInput input,
+        List<OptimizationRecommendation> output)
+    {
+        if (input.DiskFreePercent < 10)
+        {
+            Add(output,
+                "storage.low-space",
+                "Revisar espacio disponible",
+                "El disco tiene poco espacio libre. Identificar archivos temporales y datos prescindibles antes de liberar espacio.",
+                OptimizationArea.Storage,
+                OptimizationPriority.Medium,
+                OptimizationRisk.None,
+                55, 90, false,
+                "analysis.inspect-storage",
+                new[]
+                {
+                    $"Espacio libre: {input.DiskFreePercent:F1}%."
+                },
+                new[] { "No borrar archivos automáticamente." });
+        }
+    }
+
+    private static void AnalyzeGamingSettings(
+        OptimizationDiagnosticInput input,
+        List<OptimizationRecommendation> output)
+    {
+        if (input.BackgroundCaptureEnabled == true)
+        {
+            Add(output,
+                "gaming.disable-background-capture",
+                "Evaluar desactivar captura en segundo plano",
+                "La captura en segundo plano está habilitada. Se puede probar su desactivación y comparar resultados.",
+                OptimizationArea.Gaming,
+                OptimizationPriority.Low,
+                OptimizationRisk.Low,
+                35, 65, true,
+                "gaming.disable-background-capture",
+                new[] { "La configuración de captura en segundo plano está habilitada." },
+                new[]
+                {
+                    "Guardar el valor original.",
+                    "Aplicar solo con aprobación.",
+                    "Comparar benchmark antes y después."
+                });
+        }
+
+        if (input.HistoricalCaptureEnabled == true)
+        {
+            Add(output,
+                "gaming.disable-historical-capture",
+                "Evaluar desactivar captura histórica",
+                "La captura histórica está habilitada. Probar su desactivación solo si no se necesita esta función.",
+                OptimizationArea.Gaming,
+                OptimizationPriority.Low,
+                OptimizationRisk.Low,
+                30, 65, true,
+                "gaming.disable-historical-capture",
+                new[] { "La configuración de captura histórica está habilitada." },
+                new[]
+                {
+                    "Guardar el valor original.",
+                    "Aplicar solo con aprobación.",
+                    "Verificar el resultado con benchmark."
+                });
+        }
+
+        if (input.GameModeEnabled == false)
+        {
+            Add(output,
+                "gaming.enable-game-mode",
+                "Evaluar activar Modo Juego",
+                "El Modo Juego aparece desactivado. Se puede probar su activación y medir el resultado.",
+                OptimizationArea.Gaming,
+                OptimizationPriority.Low,
+                OptimizationRisk.Low,
+                35, 70, true,
+                "gaming.enable-game-mode",
+                new[] { "El Modo Juego aparece desactivado." },
+                new[]
+                {
+                    "Guardar el estado original.",
+                    "Aplicar con aprobación.",
+                    "Comparar sesiones equivalentes."
+                });
+        }
+    }
+
+    private static void Add(
+        List<OptimizationRecommendation> output,
+        string id,
+        string title,
+        string description,
+        OptimizationArea area,
+        OptimizationPriority priority,
+        OptimizationRisk risk,
+        int impact,
+        int confidence,
+        bool reversible,
+        string action,
+        IReadOnlyList<string> evidence,
+        IReadOnlyList<string> preconditions)
+    {
+        output.Add(new OptimizationRecommendation(
+            id,
+            title,
+            description,
+            area,
+            priority,
+            risk,
+            Math.Clamp(impact, 0, 100),
+            Math.Clamp(confidence, 0, 100),
+            reversible,
+            true,
+            action,
+            evidence,
+            preconditions));
+    }
+
+    private static int PriorityRank(OptimizationPriority priority) =>
+        priority switch
+        {
+            OptimizationPriority.Critical => 5,
+            OptimizationPriority.High => 4,
+            OptimizationPriority.Medium => 3,
+            OptimizationPriority.Low => 2,
+            _ => 1
+        };
+
+    private static void Validate(OptimizationDiagnosticInput input)
+    {
+        ValidatePercent(input.SystemCpuPercent, nameof(input.SystemCpuPercent));
+        if (input.Cs2CpuPercent.HasValue)
+            ValidatePercent(input.Cs2CpuPercent.Value, nameof(input.Cs2CpuPercent));
+        ValidatePercent(input.MemoryUsagePercent, nameof(input.MemoryUsagePercent));
+        ValidatePercent(input.GpuUsagePercent, nameof(input.GpuUsagePercent));
+        ValidatePercent(input.DiskFreePercent, nameof(input.DiskFreePercent));
+        ValidatePercent(input.StutterRatePercent, nameof(input.StutterRatePercent));
+
+        ValidateNonNegative(input.AvailableMemoryMb, nameof(input.AvailableMemoryMb));
+        ValidateNonNegative(input.FrametimeP99Ms, nameof(input.FrametimeP99Ms));
+        ValidateNonNegative(input.AverageFps, nameof(input.AverageFps));
+        ValidateNonNegative(input.OnePercentLowFps, nameof(input.OnePercentLowFps));
+        ValidateNonNegative(input.PointOnePercentLowFps, nameof(input.PointOnePercentLowFps));
+        if (input.Cs2CpuPercent.HasValue)
+            ValidateNonNegative(input.Cs2CpuPercent.Value, nameof(input.Cs2CpuPercent));
+        ValidateNonNegative(input.ActiveProcessCount, nameof(input.ActiveProcessCount));
+
+        if (input.CpuTemperatureCelsius is double cpu)
+            ValidateNonNegative(cpu, nameof(input.CpuTemperatureCelsius));
+
+        if (input.GpuTemperatureCelsius is double gpu)
+            ValidateNonNegative(gpu, nameof(input.GpuTemperatureCelsius));
+    }
+
+    private static void ValidatePercent(double value, string name)
+    {
+        if (!double.IsFinite(value) || value < 0 || value > 100)
+            throw new ArgumentOutOfRangeException(name);
+    }
+
+    private static void ValidateNonNegative(double value, string name)
+    {
+        if (!double.IsFinite(value) || value < 0)
+            throw new ArgumentOutOfRangeException(name);
+    }
+
+    private static void ValidateNonNegative(int value, string name)
+    {
+        if (value < 0)
+            throw new ArgumentOutOfRangeException(name);
+    }
+}

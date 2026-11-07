@@ -1,0 +1,140 @@
+using EvoOptimizer.Core.Optimization;
+
+namespace EvoOptimizer.Infrastructure.Optimization;
+
+public sealed record OptimizationOrchestrationReport(
+    Guid Id,
+    DateTimeOffset GeneratedAt,
+    AdaptiveOptimizationReport AdaptiveReport,
+    IReadOnlyList<RegressionGuardResult> RegressionResults,
+    int SignalsAnalyzed,
+    int ProfilesMonitored,
+    int ConfirmedRegressions,
+    int SuspectedRegressions,
+    int PendingInvestigations,
+    IReadOnlyList<string> SystemAlerts,
+    string OverallStatus);
+
+public sealed class OptimizationOrchestrator
+{
+    private readonly global::EvoOptimizer.Core.Optimization.AdaptiveOptimizationEngine _adaptiveEngine;
+    private readonly RegressionGuard _regressionGuard;
+
+    public OptimizationOrchestrator(
+        global::EvoOptimizer.Core.Optimization.AdaptiveOptimizationEngine adaptiveEngine,
+        RegressionGuard regressionGuard)
+    {
+        _adaptiveEngine = adaptiveEngine ??
+            throw new ArgumentNullException(nameof(adaptiveEngine));
+
+        _regressionGuard = regressionGuard ??
+            throw new ArgumentNullException(nameof(regressionGuard));
+    }
+
+    public OptimizationOrchestrationReport Analyze(
+        IEnumerable<OptimizationSignal> signals,
+        IEnumerable<RegressionWatch> watches,
+        bool benchmarkAvailable = false)
+    {
+        ArgumentNullException.ThrowIfNull(signals);
+        ArgumentNullException.ThrowIfNull(watches);
+
+        var signalList = signals.ToArray();
+        var watchList = watches.ToArray();
+
+        var adaptiveReport = _adaptiveEngine.Evaluate(
+            signalList,
+            benchmarkAvailable);
+
+        var regressionResults = watchList
+            .Select(_regressionGuard.Evaluate)
+            .ToArray();
+
+        var confirmed = regressionResults.Count(x =>
+            x.Status == RegressionStatus.Confirmed);
+
+        var suspected = regressionResults.Count(x =>
+            x.Status == RegressionStatus.Suspected);
+
+        var pending = regressionResults.Count(x =>
+            x.Status == RegressionStatus.Inconclusive);
+
+        var alerts = new List<string>();
+
+        if (confirmed > 0)
+        {
+            alerts.Add(
+                $"{confirmed} regresión(es) confirmada(s). Revisar Restore Center.");
+        }
+
+        if (suspected > 0)
+        {
+            alerts.Add(
+                $"{suspected} posible(s) regresión(es). Se necesitan nuevas mediciones.");
+        }
+
+        if (pending > 0)
+        {
+            alerts.Add(
+                $"{pending} seguimiento(s) sin evidencia suficiente.");
+        }
+
+        if (!benchmarkAvailable)
+        {
+            alerts.Add(
+                "No hay benchmark disponible. Las optimizaciones que lo requieren deben permanecer bloqueadas.");
+        }
+
+        var status = confirmed > 0
+            ? "REGRESSION_DETECTED"
+            : suspected > 0
+                ? "MONITORING_REQUIRED"
+                : pending > 0
+                    ? "INSUFFICIENT_EVIDENCE"
+                    : "SYSTEM_ANALYZED";
+
+        return new OptimizationOrchestrationReport(
+            Guid.NewGuid(),
+            DateTimeOffset.UtcNow,
+            adaptiveReport,
+            regressionResults,
+            signalList.Length,
+            watchList.Length,
+            confirmed,
+            suspected,
+            pending,
+            alerts,
+            status);
+    }
+
+    public IReadOnlyList<RecoveryDecision> PrepareRecoveryActions(
+        IEnumerable<RegressionWatch> watches,
+        OptimizationOrchestrationReport report,
+        RegressionRecoveryService recoveryService)
+    {
+        ArgumentNullException.ThrowIfNull(watches);
+        ArgumentNullException.ThrowIfNull(report);
+        ArgumentNullException.ThrowIfNull(recoveryService);
+
+        var watchList = watches.ToArray();
+
+        return report.RegressionResults
+            .Select(result =>
+            {
+                var watch = watchList.FirstOrDefault(x =>
+                    x.Id == result.WatchId);
+
+                if (watch is null)
+                {
+                    return new RecoveryDecision(
+                        false,
+                        false,
+                        "No se encontró el seguimiento original.",
+                        null);
+                }
+
+                return recoveryService.PrepareRecovery(watch, result);
+            })
+            .ToArray();
+    }
+}

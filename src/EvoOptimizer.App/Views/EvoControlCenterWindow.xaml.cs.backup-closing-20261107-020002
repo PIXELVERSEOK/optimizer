@@ -1,0 +1,42 @@
+﻿using System.ComponentModel;
+using System.Windows;
+using EvoOptimizer.App.ViewModels;
+
+namespace EvoOptimizer.App.Views;
+
+public partial class EvoControlCenterWindow : Window
+{
+    private readonly EvoControlCenterViewModel _viewModel;
+    private bool _closing;
+
+    public EvoControlCenterWindow()
+    {
+        InitializeComponent();
+
+        _viewModel = new EvoControlCenterViewModel();
+        LiveMonitorPanel.DataContext = _viewModel;
+    }
+
+    protected override async void OnClosing(CancelEventArgs e)
+    {
+        if (_closing)
+        {
+            base.OnClosing(e);
+            return;
+        }
+
+        e.Cancel = true;
+        _closing = true;
+        IsEnabled = false;
+
+        try
+        {
+            await _viewModel.DisposeAsync();
+        }
+        finally
+        {
+            Closing -= OnClosing;
+            Close();
+        }
+    }
+}

@@ -1,0 +1,331 @@
+﻿using EvoOptimizer.Core.Learning;
+
+namespace EvoOptimizer.Core.Optimization;
+
+public enum OptimizationDecisionStatus
+{
+    RecommendedForTesting,
+    RequiresBenchmark,
+    RequiresInvestigation,
+    BlockedByRegression,
+    InsufficientEvidence
+}
+
+public sealed record OptimizationCandidate(
+    string GameId,
+    string HardwareFingerprint,
+    string OptimizationId,
+    string Name,
+    string RequiredSignalCode,
+    OptimizationRisk Risk,
+    bool IsReversible,
+    bool RequiresBenchmark,
+    bool RequiresUserApproval);
+
+public sealed record OptimizationDecision(
+    string OptimizationId,
+    string Name,
+    OptimizationDecisionStatus Status,
+    OptimizationRisk Risk,
+    double EvidenceConfidence,
+    bool CanApply,
+    bool RequiresUserApproval,
+    string Reason,
+    IReadOnlyList<string> Evidence);
+
+public sealed record OptimizationDecisionReport(
+    Guid Id,
+    DateTimeOffset GeneratedAt,
+    AdaptiveOptimizationReport AdaptiveReport,
+    IReadOnlyList<OptimizationDecision> Decisions,
+    int RecommendedCount,
+    int BenchmarkRequiredCount,
+    int BlockedCount,
+    int InvestigationCount,
+    string OverallRecommendation);
+
+public sealed class OptimizationDecisionEngine
+{
+    private readonly AdaptiveOptimizationEngine _adaptiveEngine;
+
+    public OptimizationDecisionEngine(
+        AdaptiveOptimizationEngine adaptiveEngine)
+    {
+        _adaptiveEngine = adaptiveEngine ??
+            throw new ArgumentNullException(nameof(adaptiveEngine));
+    }
+
+    public OptimizationDecisionReport Evaluate(
+        string gameId,
+        string hardwareFingerprint,
+        IEnumerable<OptimizationSignal> signals,
+        IEnumerable<OptimizationCandidate> candidates,
+        IEnumerable<OptimizationKnowledge> knowledge,
+        bool benchmarkAvailable)
+    {
+        ArgumentNullException.ThrowIfNull(signals);
+        ArgumentNullException.ThrowIfNull(candidates);
+        ArgumentNullException.ThrowIfNull(knowledge);
+
+        var signalList = signals.ToArray();
+        var candidateList = candidates.ToArray();
+        var knowledgeList = knowledge.ToArray();
+
+        var adaptiveReport = _adaptiveEngine.Evaluate(
+            signalList,
+            benchmarkAvailable);
+
+        var decisions = candidateList
+            .Select(candidate => Decide(
+                gameId,
+                hardwareFingerprint,
+                candidate,
+                signalList,
+                knowledgeList,
+                benchmarkAvailable))
+            .OrderBy(x => Priority(x.Status))
+            .ThenByDescending(x => x.EvidenceConfidence)
+            .ToArray();
+
+        var recommended = decisions.Count(x =>
+            x.Status == OptimizationDecisionStatus.RecommendedForTesting);
+
+        var benchmarkRequired = decisions.Count(x =>
+            x.Status == OptimizationDecisionStatus.RequiresBenchmark);
+
+        var blocked = decisions.Count(x =>
+            x.Status == OptimizationDecisionStatus.BlockedByRegression);
+
+        var investigation = decisions.Count(x =>
+            x.Status == OptimizationDecisionStatus.RequiresInvestigation ||
+            x.Status == OptimizationDecisionStatus.InsufficientEvidence);
+
+        var overall = blocked > 0
+            ? "Hay optimizaciones bloqueadas por regresiones históricas."
+            : recommended > 0
+                ? "Hay cambios candidatos para pruebas controladas."
+                : benchmarkRequired > 0
+                    ? "Se necesitan benchmarks antes de decidir."
+                    : "No hay evidencia suficiente para recomendar cambios.";
+
+        return new OptimizationDecisionReport(
+            Guid.NewGuid(),
+            DateTimeOffset.UtcNow,
+            adaptiveReport,
+            decisions,
+            recommended,
+            benchmarkRequired,
+            blocked,
+            investigation,
+            overall);
+    }
+
+    private static OptimizationDecision Decide(
+        string gameId,
+        string hardwareFingerprint,
+        OptimizationCandidate candidate,
+        IReadOnlyList<OptimizationSignal> signals,
+        IReadOnlyList<OptimizationKnowledge> knowledge,
+        bool benchmarkAvailable)
+    {
+        var evidence = new List<string>();
+
+        if (string.IsNullOrWhiteSpace(candidate.OptimizationId) ||
+            string.IsNullOrWhiteSpace(candidate.Name) ||
+            string.IsNullOrWhiteSpace(candidate.RequiredSignalCode))
+        {
+            return Create(
+                candidate,
+                OptimizationDecisionStatus.InsufficientEvidence,
+                0,
+                false,
+                "La definición de la optimización está incompleta.",
+                evidence);
+        }
+
+        if (!string.Equals(candidate.GameId, gameId,
+                StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(candidate.HardwareFingerprint,
+                hardwareFingerprint, StringComparison.Ordinal))
+        {
+            return Create(
+                candidate,
+                OptimizationDecisionStatus.RequiresInvestigation,
+                0,
+                false,
+                "El perfil de juego o hardware no coincide.",
+                evidence);
+        }
+
+        var signal = signals.FirstOrDefault(x =>
+            x.IsPresent &&
+            string.Equals(
+                x.Code,
+                candidate.RequiredSignalCode,
+                StringComparison.OrdinalIgnoreCase));
+
+        if (signal is null)
+        {
+            return Create(
+                candidate,
+                OptimizationDecisionStatus.RequiresInvestigation,
+                0,
+                false,
+                "No existe una señal activa que justifique este cambio.",
+                evidence);
+        }
+
+        if (!double.IsFinite(signal.Confidence) ||
+            signal.Confidence < 0 ||
+            signal.Confidence > 1)
+        {
+            return Create(
+                candidate,
+                OptimizationDecisionStatus.InsufficientEvidence,
+                0,
+                false,
+                "La confianza de la señal no es válida.",
+                evidence);
+        }
+
+        evidence.Add(signal.Evidence);
+        evidence.Add($"Confianza de diagnóstico: {signal.Confidence:P0}.");
+
+        var learned = knowledge.FirstOrDefault(x =>
+            string.Equals(x.GameId, gameId,
+                StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(x.HardwareFingerprint, hardwareFingerprint,
+                StringComparison.Ordinal) &&
+            string.Equals(x.OptimizationId, candidate.OptimizationId,
+                StringComparison.Ordinal));
+
+        if (learned is not null)
+        {
+            evidence.Add(
+                $"Experimentos históricos: {learned.Experiments}.");
+
+            evidence.Add(learned.Recommendation);
+
+            if (learned.RecommendedOutcome is
+                LearningOutcome.StrongRegression or
+                LearningOutcome.Regression)
+            {
+                return Create(
+                    candidate,
+                    OptimizationDecisionStatus.BlockedByRegression,
+                    signal.Confidence,
+                    false,
+                    "El historial muestra resultados desfavorables. No recomendar este cambio.",
+                    evidence);
+            }
+
+            if (learned.RecommendedOutcome is
+                LearningOutcome.Mixed or
+                LearningOutcome.InsufficientEvidence)
+            {
+                return Create(
+                    candidate,
+                    OptimizationDecisionStatus.RequiresInvestigation,
+                    signal.Confidence,
+                    false,
+                    "El aprendizaje histórico no respalda una decisión segura.",
+                    evidence);
+            }
+        }
+
+        if (signal.Confidence < 0.75)
+        {
+            return Create(
+                candidate,
+                OptimizationDecisionStatus.RequiresInvestigation,
+                signal.Confidence,
+                false,
+                "La confianza del diagnóstico es inferior al 75%.",
+                evidence);
+        }
+
+        if (!candidate.IsReversible)
+        {
+            return Create(
+                candidate,
+                OptimizationDecisionStatus.RequiresInvestigation,
+                signal.Confidence,
+                false,
+                "El cambio no dispone de una ruta de reversión.",
+                evidence);
+        }
+
+        if (candidate.Risk == OptimizationRisk.High ||
+            candidate.Risk == OptimizationRisk.Critical)
+        {
+            return Create(
+                candidate,
+                OptimizationDecisionStatus.RequiresInvestigation,
+                signal.Confidence,
+                false,
+                "El nivel de riesgo exige una evaluación especializada.",
+                evidence);
+        }
+
+        if (candidate.RequiresBenchmark && !benchmarkAvailable)
+        {
+            return Create(
+                candidate,
+                OptimizationDecisionStatus.RequiresBenchmark,
+                signal.Confidence,
+                false,
+                "Se necesita una medición de referencia antes de probar el cambio.",
+                evidence);
+        }
+
+        if (candidate.Risk == OptimizationRisk.Medium &&
+            !benchmarkAvailable)
+        {
+            return Create(
+                candidate,
+                OptimizationDecisionStatus.RequiresBenchmark,
+                signal.Confidence,
+                false,
+                "El cambio de riesgo medio requiere una referencia de rendimiento.",
+                evidence);
+        }
+
+        return Create(
+            candidate,
+            OptimizationDecisionStatus.RecommendedForTesting,
+            signal.Confidence,
+            false,
+            "Cumple los criterios para una prueba controlada. Todavía no está autorizado para aplicarse.",
+            evidence);
+    }
+
+    private static OptimizationDecision Create(
+        OptimizationCandidate candidate,
+        OptimizationDecisionStatus status,
+        double confidence,
+        bool canApply,
+        string reason,
+        IReadOnlyList<string> evidence)
+    {
+        return new OptimizationDecision(
+            candidate.OptimizationId,
+            candidate.Name,
+            status,
+            candidate.Risk,
+            confidence,
+            canApply,
+            candidate.RequiresUserApproval,
+            reason,
+            evidence);
+    }
+
+    private static int Priority(OptimizationDecisionStatus status)
+        => status switch
+        {
+            OptimizationDecisionStatus.BlockedByRegression => 0,
+            OptimizationDecisionStatus.RecommendedForTesting => 1,
+            OptimizationDecisionStatus.RequiresBenchmark => 2,
+            OptimizationDecisionStatus.RequiresInvestigation => 3,
+            _ => 4
+        };
+}

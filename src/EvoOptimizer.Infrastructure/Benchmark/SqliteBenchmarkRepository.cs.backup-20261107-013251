@@ -1,0 +1,403 @@
+﻿using System.Text.Json;
+using Microsoft.Data.Sqlite;
+using EvoOptimizer.Core.Benchmark;
+
+namespace EvoOptimizer.Infrastructure.Benchmark;
+
+public sealed class SqliteBenchmarkRepository
+{
+    private readonly string _connectionString;
+    private readonly string _databasePath;
+
+    private static readonly JsonSerializerOptions JsonOptions = new()
+    {
+        PropertyNameCaseInsensitive = true
+    };
+
+    public SqliteBenchmarkRepository(string? databasePath = null)
+    {
+        _databasePath = databasePath ??
+            Path.Combine(
+                Environment.GetFolderPath(
+                    Environment.SpecialFolder.LocalApplicationData),
+                "EvoFpsOptimizer",
+                "History",
+                "evo-benchmarks.db");
+
+        var directory = Path.GetDirectoryName(_databasePath);
+
+        if (!string.IsNullOrWhiteSpace(directory))
+            Directory.CreateDirectory(directory);
+
+        _connectionString = new SqliteConnectionStringBuilder
+        {
+            DataSource = _databasePath,
+            Mode = SqliteOpenMode.ReadWriteCreate,
+            Cache = SqliteCacheMode.Shared,
+            Pooling = true
+        }.ToString();
+    }
+
+    public async Task InitializeAsync(
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = new SqliteConnection(_connectionString);
+        await connection.OpenAsync(cancellationToken);
+
+        await using var command = connection.CreateCommand();
+
+        command.CommandText = """
+            PRAGMA journal_mode=WAL;
+
+            CREATE TABLE IF NOT EXISTS benchmark_experiments (
+                id TEXT PRIMARY KEY,
+                status TEXT NOT NULL,
+                updated_utc TEXT NOT NULL,
+                payload TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS benchmark_runs (
+                id TEXT PRIMARY KEY,
+                experiment_id TEXT NOT NULL,
+                side TEXT NOT NULL,
+                captured_utc TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                FOREIGN KEY(experiment_id)
+                    REFERENCES benchmark_experiments(id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_benchmark_runs_experiment
+            ON benchmark_runs(experiment_id);
+
+            CREATE TABLE IF NOT EXISTS benchmark_effectiveness (
+                id TEXT PRIMARY KEY,
+                optimization_id TEXT NOT NULL,
+                evaluated_utc TEXT NOT NULL,
+                payload TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_benchmark_effectiveness_optimization
+            ON benchmark_effectiveness(optimization_id);
+
+            CREATE TABLE IF NOT EXISTS benchmark_learning_queue (
+                id TEXT PRIMARY KEY,
+                game_id TEXT NOT NULL,
+                hardware_id TEXT NOT NULL,
+                created_utc TEXT NOT NULL,
+                status TEXT NOT NULL,
+                payload TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_benchmark_learning_status
+            ON benchmark_learning_queue(status);
+            """;
+
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task SaveExperimentAsync(
+        BenchmarkExperiment experiment,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(experiment);
+
+        await InitializeAsync(cancellationToken);
+
+        await using var connection = new SqliteConnection(_connectionString);
+        await connection.OpenAsync(cancellationToken);
+
+        await using var command = connection.CreateCommand();
+
+        command.CommandText = """
+            INSERT INTO benchmark_experiments
+                (id, status, updated_utc, payload)
+            VALUES
+                ($id, $status, $updated, $payload)
+            ON CONFLICT(id) DO UPDATE SET
+                status = excluded.status,
+                updated_utc = excluded.updated_utc,
+                payload = excluded.payload;
+            """;
+
+        command.Parameters.AddWithValue(
+            "$id", experiment.Definition.Id.ToString());
+
+        command.Parameters.AddWithValue(
+            "$status", experiment.Status.ToString());
+
+        command.Parameters.AddWithValue(
+            "$updated", DateTimeOffset.UtcNow.ToString("O"));
+
+        command.Parameters.AddWithValue(
+            "$payload", JsonSerializer.Serialize(experiment, JsonOptions));
+
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task SaveExperimentRunAsync(
+        BenchmarkExperiment experiment,
+        BenchmarkExperimentRun run,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(experiment);
+        ArgumentNullException.ThrowIfNull(run);
+
+        await InitializeAsync(cancellationToken);
+
+        await using var connection = new SqliteConnection(_connectionString);
+        await connection.OpenAsync(cancellationToken);
+
+        await using var transaction =
+            await connection.BeginTransactionAsync(cancellationToken);
+
+        await using (var experimentCommand = connection.CreateCommand())
+        {
+            experimentCommand.Transaction = transaction;
+
+            experimentCommand.CommandText = """
+                INSERT INTO benchmark_experiments
+                    (id, status, updated_utc, payload)
+                VALUES
+                    ($id, $status, $updated, $payload)
+                ON CONFLICT(id) DO UPDATE SET
+                    status = excluded.status,
+                    updated_utc = excluded.updated_utc,
+                    payload = excluded.payload;
+                """;
+
+            experimentCommand.Parameters.AddWithValue(
+                "$id", experiment.Definition.Id.ToString());
+
+            experimentCommand.Parameters.AddWithValue(
+                "$status", experiment.Status.ToString());
+
+            experimentCommand.Parameters.AddWithValue(
+                "$updated", DateTimeOffset.UtcNow.ToString("O"));
+
+            experimentCommand.Parameters.AddWithValue(
+                "$payload", JsonSerializer.Serialize(experiment, JsonOptions));
+
+            await experimentCommand.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await using (var runCommand = connection.CreateCommand())
+        {
+            runCommand.Transaction = transaction;
+
+            runCommand.CommandText = """
+                INSERT INTO benchmark_runs
+                    (id, experiment_id, side, captured_utc, payload)
+                VALUES
+                    ($id, $experiment, $side, $captured, $payload)
+                ON CONFLICT(id) DO NOTHING;
+                """;
+
+            runCommand.Parameters.AddWithValue("$id", run.Id.ToString());
+            runCommand.Parameters.AddWithValue(
+                "$experiment", run.ExperimentId.ToString());
+            runCommand.Parameters.AddWithValue(
+                "$side", run.Side.ToString());
+            runCommand.Parameters.AddWithValue(
+                "$captured", run.Result.CapturedAt.ToString("O"));
+            runCommand.Parameters.AddWithValue(
+                "$payload", JsonSerializer.Serialize(run, JsonOptions));
+
+            await runCommand.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await transaction.CommitAsync(cancellationToken);
+    }
+
+    public async Task<BenchmarkExperiment?> GetExperimentAsync(
+        Guid id,
+        CancellationToken cancellationToken = default)
+    {
+        await InitializeAsync(cancellationToken);
+
+        await using var connection = new SqliteConnection(_connectionString);
+        await connection.OpenAsync(cancellationToken);
+
+        await using var command = connection.CreateCommand();
+
+        command.CommandText = """
+            SELECT payload
+            FROM benchmark_experiments
+            WHERE id = $id
+            LIMIT 1;
+            """;
+
+        command.Parameters.AddWithValue("$id", id.ToString());
+
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+
+        if (result is not string json)
+            return null;
+
+        return JsonSerializer.Deserialize<BenchmarkExperiment>(
+            json, JsonOptions);
+    }
+
+    public async Task<IReadOnlyList<BenchmarkExperiment>> GetExperimentsAsync(
+        CancellationToken cancellationToken = default)
+    {
+        await InitializeAsync(cancellationToken);
+
+        var result = new List<BenchmarkExperiment>();
+
+        await using var connection = new SqliteConnection(_connectionString);
+        await connection.OpenAsync(cancellationToken);
+
+        await using var command = connection.CreateCommand();
+
+        command.CommandText = """
+            SELECT payload
+            FROM benchmark_experiments
+            ORDER BY updated_utc DESC;
+            """;
+
+        await using var reader =
+            await command.ExecuteReaderAsync(cancellationToken);
+
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            var item = JsonSerializer.Deserialize<BenchmarkExperiment>(
+                reader.GetString(0), JsonOptions);
+
+            if (item is not null)
+                result.Add(item);
+        }
+
+        return result;
+    }
+
+    public async Task SaveEffectivenessAsync(
+        OptimizationEffectivenessObservation observation,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(observation);
+
+        await InitializeAsync(cancellationToken);
+
+        await using var connection = new SqliteConnection(_connectionString);
+        await connection.OpenAsync(cancellationToken);
+
+        await using var command = connection.CreateCommand();
+
+        command.CommandText = """
+            INSERT INTO benchmark_effectiveness
+                (id, optimization_id, evaluated_utc, payload)
+            VALUES
+                ($id, $optimization, $evaluated, $payload)
+            ON CONFLICT(id) DO NOTHING;
+            """;
+
+        command.Parameters.AddWithValue("$id", observation.Id.ToString());
+        command.Parameters.AddWithValue(
+            "$optimization", observation.OptimizationId);
+        command.Parameters.AddWithValue(
+            "$evaluated", observation.EvaluatedAt.ToString("O"));
+        command.Parameters.AddWithValue(
+            "$payload", JsonSerializer.Serialize(observation, JsonOptions));
+
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<OptimizationEffectivenessObservation>>
+        GetEffectivenessAsync(
+            string optimizationId,
+            CancellationToken cancellationToken = default)
+    {
+        await InitializeAsync(cancellationToken);
+
+        var result = new List<OptimizationEffectivenessObservation>();
+
+        await using var connection = new SqliteConnection(_connectionString);
+        await connection.OpenAsync(cancellationToken);
+
+        await using var command = connection.CreateCommand();
+
+        command.CommandText = """
+            SELECT payload
+            FROM benchmark_effectiveness
+            WHERE optimization_id = $optimization
+            ORDER BY evaluated_utc DESC;
+            """;
+
+        command.Parameters.AddWithValue("$optimization", optimizationId);
+
+        await using var reader =
+            await command.ExecuteReaderAsync(cancellationToken);
+
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            var item =
+                JsonSerializer.Deserialize<OptimizationEffectivenessObservation>(
+                    reader.GetString(0), JsonOptions);
+
+            if (item is not null)
+                result.Add(item);
+        }
+
+        return result;
+    }
+
+    public async Task SaveLearningCandidateAsync(
+        BenchmarkLearningCandidate candidate,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(candidate);
+
+        await InitializeAsync(cancellationToken);
+
+        await using var connection = new SqliteConnection(_connectionString);
+        await connection.OpenAsync(cancellationToken);
+
+        await using var command = connection.CreateCommand();
+
+        command.CommandText = """
+            INSERT INTO benchmark_learning_queue
+                (id, game_id, hardware_id, created_utc, status, payload)
+            VALUES
+                ($id, $game, $hardware, $created, $status, $payload)
+            ON CONFLICT(id) DO NOTHING;
+            """;
+
+        command.Parameters.AddWithValue(
+            "$id", candidate.Id.ToString());
+        command.Parameters.AddWithValue(
+            "$game", candidate.Run.GameId);
+        command.Parameters.AddWithValue(
+            "$hardware", candidate.Run.HardwareId);
+        command.Parameters.AddWithValue(
+            "$created", candidate.CreatedAt.ToString("O"));
+        command.Parameters.AddWithValue(
+            "$status", "PENDING_LEARNING");
+        command.Parameters.AddWithValue(
+            "$payload", JsonSerializer.Serialize(candidate, JsonOptions));
+
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task<int> GetPendingLearningCountAsync(
+        CancellationToken cancellationToken = default)
+    {
+        await InitializeAsync(cancellationToken);
+
+        await using var connection = new SqliteConnection(_connectionString);
+        await connection.OpenAsync(cancellationToken);
+
+        await using var command = connection.CreateCommand();
+
+        command.CommandText = """
+            SELECT COUNT(*)
+            FROM benchmark_learning_queue
+            WHERE status = 'PENDING_LEARNING';
+            """;
+
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+
+        return Convert.ToInt32(result);
+    }
+
+    public string DatabasePath => _databasePath;
+}

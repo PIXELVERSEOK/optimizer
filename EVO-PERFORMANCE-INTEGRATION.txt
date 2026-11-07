@@ -1,0 +1,1797 @@
+
+========== src\EvoOptimizer.App\ViewModels\EvoControlCenterViewModel.cs ==========
+using System.Collections.ObjectModel;
+using System.ComponentModel;
+using System.Runtime.CompilerServices;
+using System.Windows.Threading;
+using EvoOptimizer.Infrastructure.Analysis;
+using EvoOptimizer.Infrastructure.Telemetry;
+
+namespace EvoOptimizer.App.ViewModels;
+
+public sealed class EvoControlCenterViewModel :
+    INotifyPropertyChanged, IAsyncDisposable
+{
+    private readonly LivePerformanceMonitor _monitor;
+    private readonly LiveAnomalyDetector _anomalyDetector;
+    private readonly Dispatcher _dispatcher;
+
+    private CancellationTokenSource? _cancellation;
+    private Task? _monitorTask;
+    private bool _isMonitoring;
+    private bool _disposed;
+
+    private double _systemCpuPercent;
+    private double? _cs2CpuPercent;
+    private double _memoryUsagePercent;
+    private double _availableMemoryMb;
+    private double _cs2MemoryMb;
+    private int _activeProcessCount;
+    private int _cs2ProcessCount;
+    private DateTimeOffset? _lastUpdated;
+    private string _monitorStatus = "DETENIDO";
+    private string _systemHealth = "SIN DATOS";
+
+    public event PropertyChangedEventHandler? PropertyChanged;
+
+    public ObservableCollection<LiveAnomaly> Anomalies { get; } = new();
+
+    public ObservableCollection<string> Alerts { get; } = new();
+
+    public double SystemCpuPercent
+    {
+        get => _systemCpuPercent;
+        private set => SetField(ref _systemCpuPercent, value);
+    }
+
+    public double? Cs2CpuPercent
+    {
+        get => _cs2CpuPercent;
+        private set => SetField(ref _cs2CpuPercent, value);
+    }
+
+    public double MemoryUsagePercent
+    {
+        get => _memoryUsagePercent;
+        private set => SetField(ref _memoryUsagePercent, value);
+    }
+
+    public double AvailableMemoryMb
+    {
+        get => _availableMemoryMb;
+        private set => SetField(ref _availableMemoryMb, value);
+    }
+
+    public double Cs2MemoryMb
+    {
+        get => _cs2MemoryMb;
+        private set => SetField(ref _cs2MemoryMb, value);
+    }
+
+    public int ActiveProcessCount
+    {
+        get => _activeProcessCount;
+        private set => SetField(ref _activeProcessCount, value);
+    }
+
+    public int Cs2ProcessCount
+    {
+        get => _cs2ProcessCount;
+        private set => SetField(ref _cs2ProcessCount, value);
+    }
+
+    public DateTimeOffset? LastUpdated
+    {
+        get => _lastUpdated;
+        private set => SetField(ref _lastUpdated, value);
+    }
+
+    public string MonitorStatus
+    {
+        get => _monitorStatus;
+        private set => SetField(ref _monitorStatus, value);
+    }
+
+    public string SystemHealth
+    {
+        get => _systemHealth;
+        private set => SetField(ref _systemHealth, value);
+    }
+
+    public bool IsMonitoring
+    {
+        get => _isMonitoring;
+        private set
+        {
+            if (SetField(ref _isMonitoring, value))
+                OnPropertyChanged(nameof(CanStart));
+        }
+    }
+
+    public bool CanStart => !IsMonitoring && !_disposed;
+
+    public EvoControlCenterViewModel(
+        LivePerformanceMonitor? monitor = null,
+        LiveAnomalyDetector? anomalyDetector = null,
+        Dispatcher? dispatcher = null)
+    {
+        _monitor = monitor ?? new LivePerformanceMonitor();
+        _anomalyDetector = anomalyDetector ?? new LiveAnomalyDetector();
+        _dispatcher = dispatcher ?? Dispatcher.CurrentDispatcher;
+
+        _monitor.SnapshotCaptured += OnSnapshotCaptured;
+    }
+
+    public Task StartAsync()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        if (IsMonitoring)
+            return Task.CompletedTask;
+
+        _cancellation?.Dispose();
+        _cancellation = new CancellationTokenSource();
+
+        var token = _cancellation.Token;
+
+        IsMonitoring = true;
+        MonitorStatus = "INICIANDO";
+        SystemHealth = "RECOPILANDO DATOS";
+
+        _monitorTask = Task.Run(
+            () => _monitor.StartAsync(token),
+            token);
+
+        _ = ObserveMonitorAsync(_monitorTask);
+
+        return Task.CompletedTask;
+    }
+
+    public async Task StopAsync()
+    {
+        if (!IsMonitoring)
+            return;
+
+        MonitorStatus = "DETENIENDO";
+        _cancellation?.Cancel();
+
+        if (_monitorTask is not null)
+        {
+            try
+            {
+                await _monitorTask;
+            }
+            catch (OperationCanceledException)
+            {
+                // DetenciÛn solicitada por el usuario.
+            }
+        }
+
+        IsMonitoring = false;
+        MonitorStatus = "DETENIDO";
+    }
+
+    private async Task ObserveMonitorAsync(Task task)
+    {
+        try
+        {
+            await task;
+        }
+        catch (OperationCanceledException)
+        {
+            // FinalizaciÛn normal del monitor.
+        }
+        catch (Exception ex)
+        {
+            await _dispatcher.InvokeAsync(() =>
+            {
+                MonitorStatus = "ERROR";
+                SystemHealth = "ERROR DE MONITORIZACI”N";
+                Alerts.Insert(0, ex.Message);
+            });
+        }
+        finally
+        {
+            await _dispatcher.InvokeAsync(() =>
+            {
+                IsMonitoring = false;
+
+                if (MonitorStatus != "ERROR")
+                    MonitorStatus = "DETENIDO";
+            });
+        }
+    }
+
+    private void OnSnapshotCaptured(LivePerformanceSnapshot snapshot)
+    {
+        _ = _dispatcher.InvokeAsync(() => UpdateDashboard(snapshot));
+    }
+
+    private void UpdateDashboard(LivePerformanceSnapshot snapshot)
+    {
+        if (_disposed)
+            return;
+
+        SystemCpuPercent = snapshot.SystemCpuPercent;
+        Cs2CpuPercent = snapshot.Cs2CpuPercent;
+        MemoryUsagePercent = snapshot.MemoryUsagePercent;
+        AvailableMemoryMb = snapshot.AvailableMemoryMb;
+        Cs2MemoryMb = snapshot.Cs2MemoryMb;
+        ActiveProcessCount = snapshot.ActiveProcessCount;
+        Cs2ProcessCount = snapshot.Cs2ProcessCount;
+        LastUpdated = snapshot.Timestamp;
+
+        var report = _anomalyDetector.Analyze(_monitor.GetHistory());
+
+        Anomalies.Clear();
+
+        foreach (var anomaly in report.Anomalies)
+            Anomalies.Add(anomaly);
+
+        Alerts.Clear();
+
+        foreach (var alert in snapshot.Alerts)
+            Alerts.Add(alert);
+
+        foreach (var anomaly in report.Anomalies)
+        {
+            if (!Alerts.Contains(anomaly.Code))
+                Alerts.Add($"{anomaly.Title}: {anomaly.Evidence}");
+        }
+
+        SystemHealth = !report.HasEnoughData
+            ? "RECOPILANDO DATOS"
+            : report.Anomalies.Any(x =>
+                x.Severity == LiveAnomalySeverity.Critical)
+                ? "ATENCI”N CRÕTICA"
+                : report.Anomalies.Any(x =>
+                    x.Severity == LiveAnomalySeverity.Warning)
+                    ? "ATENCI”N"
+                    : "ESTABLE";
+
+        MonitorStatus = "MONITOREANDO";
+    }
+
+    private bool SetField<T>(
+        ref T field,
+        T value,
+        [CallerMemberName] string? propertyName = null)
+    {
+        if (EqualityComparer<T>.Default.Equals(field, value))
+            return false;
+
+        field = value;
+        OnPropertyChanged(propertyName);
+        return true;
+    }
+
+    private void OnPropertyChanged(
+        [CallerMemberName] string? propertyName = null)
+    {
+        PropertyChanged?.Invoke(
+            this,
+            new PropertyChangedEventArgs(propertyName));
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_disposed)
+            return;
+
+        if (IsMonitoring)
+            await StopAsync();
+
+        _disposed = true;
+        _monitor.SnapshotCaptured -= OnSnapshotCaptured;
+        _cancellation?.Dispose();
+        _monitor.Dispose();
+    }
+}
+
+========== src\EvoOptimizer.Infrastructure\Capture\PresentMonCaptureService.cs ==========
+using System.Diagnostics;
+
+namespace EvoOptimizer.Infrastructure.Capture;
+
+public enum CaptureStatus
+{
+    Completed,
+    GameNotRunning,
+    ExecutableNotFound,
+    TimedOut,
+    Cancelled,
+    Failed
+}
+
+public sealed record PresentMonCaptureResult(
+    CaptureStatus Status,
+    string? CsvPath,
+    DateTimeOffset StartedAt,
+    DateTimeOffset FinishedAt,
+    TimeSpan Duration,
+    int? ExitCode,
+    string Message,
+    string StandardError);
+
+public sealed class PresentMonCaptureService
+{
+    private readonly string _captureDirectory;
+    private readonly SemaphoreSlim _captureLock = new(1, 1);
+
+    public PresentMonCaptureService(string? captureDirectory = null)
+    {
+        _captureDirectory = captureDirectory ??
+            Path.Combine(
+                Environment.GetFolderPath(
+                    Environment.SpecialFolder.LocalApplicationData),
+                "EvoFpsOptimizer",
+                "Captures");
+
+        Directory.CreateDirectory(_captureDirectory);
+    }
+
+    public async Task<PresentMonCaptureResult> CaptureCs2Async(
+        string presentMonExecutable,
+        int durationSeconds = 60,
+        CancellationToken cancellationToken = default)
+    {
+        if (durationSeconds < 10 || durationSeconds > 3600)
+            throw new ArgumentOutOfRangeException(
+                nameof(durationSeconds),
+                "La captura debe durar entre 10 y 3600 segundos.");
+
+        if (!await _captureLock.WaitAsync(0, cancellationToken))
+            throw new InvalidOperationException(
+                "Ya existe una captura PresentMon activa.");
+
+        try
+        {
+            return await CaptureInternalAsync(
+                presentMonExecutable,
+                durationSeconds,
+                cancellationToken);
+        }
+        finally
+        {
+            _captureLock.Release();
+        }
+    }
+
+    private async Task<PresentMonCaptureResult> CaptureInternalAsync(
+        string executable,
+        int durationSeconds,
+        CancellationToken cancellationToken)
+    {
+        var startedAt = DateTimeOffset.Now;
+
+        if (string.IsNullOrWhiteSpace(executable) ||
+            !File.Exists(executable))
+        {
+            return Result(
+                CaptureStatus.ExecutableNotFound,
+                null,
+                startedAt,
+                null,
+                "No se encontr√≥ PresentMon.exe.",
+                null,
+                "");
+        }
+
+        var gameProcesses = Process.GetProcessesByName("cs2");
+
+        try
+        {
+            if (gameProcesses.Length == 0)
+            {
+                return Result(
+                    CaptureStatus.GameNotRunning,
+                    null,
+                    startedAt,
+                    null,
+                    "CS2 no est√° ejecut√°ndose. Inici√° el juego antes de capturar.",
+                    null,
+                    "");
+            }
+        }
+        finally
+        {
+            foreach (var gameProcessToDispose in gameProcesses)
+                gameProcessToDispose.Dispose();
+        }
+
+        var fileName =
+            $"CS2_{startedAt:yyyyMMdd_HHmmss}_{Guid.NewGuid():N}.csv";
+
+        var csvPath = Path.Combine(_captureDirectory, fileName);
+
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = Path.GetFullPath(executable),
+            WorkingDirectory = Path.GetDirectoryName(
+                Path.GetFullPath(executable))!,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true
+        };
+
+        startInfo.ArgumentList.Add("--process_name");
+        startInfo.ArgumentList.Add("cs2.exe");
+
+        startInfo.ArgumentList.Add("--output_file");
+        startInfo.ArgumentList.Add(csvPath);
+
+        startInfo.ArgumentList.Add("--timed");
+        startInfo.ArgumentList.Add(durationSeconds.ToString());
+
+        startInfo.ArgumentList.Add("--terminate_after_timed");
+        startInfo.ArgumentList.Add("--no_console_stats");
+        startInfo.ArgumentList.Add("--v2_metrics");
+
+        using var process = new Process
+        {
+            StartInfo = startInfo,
+            EnableRaisingEvents = true
+        };
+
+        try
+        {
+            if (!process.Start())
+            {
+                return Result(
+                    CaptureStatus.Failed,
+                    null,
+                    startedAt,
+                    null,
+                    "Windows no pudo iniciar PresentMon.",
+                    null,
+                    "");
+            }
+
+            var stdoutTask = process.StandardOutput.ReadToEndAsync();
+            var stderrTask = process.StandardError.ReadToEndAsync();
+
+            using var timeout = CancellationTokenSource
+                .CreateLinkedTokenSource(cancellationToken);
+
+            timeout.CancelAfter(TimeSpan.FromSeconds(durationSeconds + 60));
+
+            try
+            {
+                await process.WaitForExitAsync(timeout.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                if (!process.HasExited)
+                {
+                    try
+                    {
+                        process.Kill(entireProcessTree: true);
+                    }
+                    catch
+                    {
+                        // El proceso pudo haber terminado entre comprobaciones.
+                    }
+                }
+
+                var stderrCancelled = await stderrTask;
+                _ = await stdoutTask;
+
+                var status = cancellationToken.IsCancellationRequested
+                    ? CaptureStatus.Cancelled
+                    : CaptureStatus.TimedOut;
+
+                return Result(
+                    status,
+                    File.Exists(csvPath) ? csvPath : null,
+                    startedAt,
+                    null,
+                    status == CaptureStatus.Cancelled
+                        ? "Captura cancelada."
+                        : "PresentMon super√≥ el tiempo m√°ximo permitido.",
+                    process.HasExited ? process.ExitCode : null,
+                    stderrCancelled);
+            }
+
+            var stdout = await stdoutTask;
+            var stderr = await stderrTask;
+
+            var finishedAt = DateTimeOffset.Now;
+
+            if (process.ExitCode != 0)
+            {
+                return Result(
+                    CaptureStatus.Failed,
+                    File.Exists(csvPath) ? csvPath : null,
+                    startedAt,
+                    finishedAt,
+                    $"PresentMon termin√≥ con c√≥digo {process.ExitCode}.",
+                    process.ExitCode,
+                    stderr);
+            }
+
+            if (!File.Exists(csvPath))
+            {
+                return Result(
+                    CaptureStatus.Failed,
+                    null,
+                    startedAt,
+                    finishedAt,
+                    "PresentMon termin√≥ sin generar el CSV.",
+                    process.ExitCode,
+                    stderr);
+            }
+
+            var fileInfo = new FileInfo(csvPath);
+
+            if (fileInfo.Length < 100)
+            {
+                return Result(
+                    CaptureStatus.Failed,
+                    csvPath,
+                    startedAt,
+                    finishedAt,
+                    "El CSV est√° vac√≠o o no contiene datos suficientes.",
+                    process.ExitCode,
+                    stderr);
+            }
+
+            return Result(
+                CaptureStatus.Completed,
+                csvPath,
+                startedAt,
+                finishedAt,
+                $"Captura CS2 completada. Archivo: {csvPath}",
+                process.ExitCode,
+                stderr);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            return Result(
+                CaptureStatus.Failed,
+                File.Exists(csvPath) ? csvPath : null,
+                startedAt,
+                null,
+                ex.Message,
+                null,
+                "");
+        }
+    }
+
+    private static PresentMonCaptureResult Result(
+        CaptureStatus status,
+        string? path,
+        DateTimeOffset started,
+        DateTimeOffset? finished,
+        string message,
+        int? exitCode,
+        string stderr)
+    {
+        var end = finished ?? DateTimeOffset.Now;
+
+        return new PresentMonCaptureResult(
+            status,
+            path,
+            started,
+            end,
+            end - started,
+            exitCode,
+            message,
+            stderr);
+    }
+}
+
+========== src\EvoOptimizer.Infrastructure\Analysis\PresentMonCsvReader.cs ==========
+using System.Globalization;
+
+namespace EvoOptimizer.Infrastructure.Analysis;
+
+public sealed record PresentMonFrame(
+    double TimeSeconds,
+    double FrametimeMs,
+    bool Dropped,
+    string PresentMode);
+
+public sealed record PresentMonReadResult(
+    IReadOnlyList<PresentMonFrame> Frames,
+    int InvalidRows,
+    string FrametimeColumn,
+    IReadOnlyList<string> Warnings);
+
+public sealed class PresentMonCsvReader
+{
+    private static readonly string[] PreferredColumns =
+    {
+        "MsBetweenDisplayChange",
+        "MsBetweenPresents",
+        "FrameTime",
+        "Frametime",
+        "MsBetweenPresentsDisplayed"
+    };
+
+    public PresentMonReadResult Read(string path)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+
+        if (!File.Exists(path))
+            throw new FileNotFoundException("No se encontrÛ el CSV.", path);
+
+        using var reader = new StreamReader(path);
+
+        var headerLine = reader.ReadLine();
+
+        if (string.IsNullOrWhiteSpace(headerLine))
+            throw new InvalidDataException("El CSV est· vacÌo.");
+
+        var headers = ParseCsvLine(headerLine)
+            .Select((name, index) => new
+            {
+                Name = Normalize(name),
+                Index = index
+            })
+            .ToArray();
+
+        var frameColumn = PreferredColumns
+            .Select(column => headers.FirstOrDefault(
+                h => h.Name.Equals(column, StringComparison.OrdinalIgnoreCase)))
+            .FirstOrDefault(x => x is not null);
+
+        if (frameColumn is null)
+            throw new InvalidDataException(
+                "No se encontrÛ una columna de frametime compatible.");
+
+        var timeColumn = headers.FirstOrDefault(
+            h => h.Name.Equals("TimeInSeconds", StringComparison.OrdinalIgnoreCase));
+
+        var droppedColumn = headers.FirstOrDefault(
+            h => h.Name.Equals("Dropped", StringComparison.OrdinalIgnoreCase));
+
+        var modeColumn = headers.FirstOrDefault(
+            h => h.Name.Equals("PresentMode", StringComparison.OrdinalIgnoreCase));
+
+        var frames = new List<PresentMonFrame>();
+        var warnings = new List<string>();
+        var invalidRows = 0;
+        var rowNumber = 1;
+
+        while (!reader.EndOfStream)
+        {
+            var line = reader.ReadLine();
+            rowNumber++;
+
+            if (string.IsNullOrWhiteSpace(line))
+                continue;
+
+            try
+            {
+                var fields = ParseCsvLine(line);
+
+                if (frameColumn.Index >= fields.Count)
+                {
+                    invalidRows++;
+                    continue;
+                }
+
+                if (!double.TryParse(
+                    fields[frameColumn.Index],
+                    NumberStyles.Float,
+                    CultureInfo.InvariantCulture,
+                    out var frameTime) ||
+                    !double.IsFinite(frameTime) ||
+                    frameTime <= 0 ||
+                    frameTime > 10000)
+                {
+                    invalidRows++;
+                    continue;
+                }
+
+                var timestamp = 0d;
+
+                if (timeColumn is not null &&
+                    timeColumn.Index < fields.Count)
+                {
+                    double.TryParse(
+                        fields[timeColumn.Index],
+                        NumberStyles.Float,
+                        CultureInfo.InvariantCulture,
+                        out timestamp);
+                }
+
+                var dropped = false;
+
+                if (droppedColumn is not null &&
+                    droppedColumn.Index < fields.Count)
+                {
+                    dropped = fields[droppedColumn.Index].Equals(
+                                  "true", StringComparison.OrdinalIgnoreCase) ||
+                              fields[droppedColumn.Index] == "1";
+                }
+
+                var mode = modeColumn is not null &&
+                           modeColumn.Index < fields.Count
+                    ? fields[modeColumn.Index]
+                    : string.Empty;
+
+                frames.Add(new PresentMonFrame(
+                    timestamp,
+                    frameTime,
+                    dropped,
+                    mode));
+            }
+            catch (FormatException)
+            {
+                invalidRows++;
+            }
+        }
+
+        if (frames.Count == 0)
+            throw new InvalidDataException(
+                "No se encontraron muestras v·lidas de frametime.");
+
+        if (invalidRows > 0)
+            warnings.Add($"{invalidRows} filas se descartaron por datos inv·lidos.");
+
+        return new PresentMonReadResult(
+            frames,
+            invalidRows,
+            frameColumn.Name,
+            warnings);
+    }
+
+    private static string Normalize(string value) =>
+        value.Trim().Trim('\uFEFF');
+
+    private static List<string> ParseCsvLine(string line)
+    {
+        var fields = new List<string>();
+        var current = new System.Text.StringBuilder();
+        var insideQuotes = false;
+
+        for (var i = 0; i < line.Length; i++)
+        {
+            var character = line[i];
+
+            if (character == '"')
+            {
+                if (insideQuotes &&
+                    i + 1 < line.Length &&
+                    line[i + 1] == '"')
+                {
+                    current.Append('"');
+                    i++;
+                }
+                else
+                {
+                    insideQuotes = !insideQuotes;
+                }
+            }
+            else if (character == ',' && !insideQuotes)
+            {
+                fields.Add(current.ToString().Trim());
+                current.Clear();
+            }
+            else
+            {
+                current.Append(character);
+            }
+        }
+
+        if (insideQuotes)
+            throw new FormatException("Campo CSV con comillas sin cerrar.");
+
+        fields.Add(current.ToString().Trim());
+        return fields;
+    }
+}
+
+========== src\EvoOptimizer.Infrastructure\Analysis\AdvancedFpsAnalyzer.cs ==========
+namespace EvoOptimizer.Infrastructure.Analysis;
+
+public enum FpsStabilityLevel
+{
+    Excellent,
+    Good,
+    Moderate,
+    Poor,
+    Critical,
+    InsufficientData
+}
+
+public sealed record FrametimeEvent(
+    double TimeSeconds,
+    double FrametimeMs,
+    string Severity,
+    string Description);
+
+public sealed record FrametimeStutterCluster(
+    double StartSeconds,
+    double EndSeconds,
+    int EventCount,
+    double MaximumFrametimeMs);
+
+public sealed record AdvancedFpsReport(
+    DateTimeOffset AnalyzedAt,
+    int FrameCount,
+    double DurationSeconds,
+    double AverageFps,
+    double MedianFps,
+    double OnePercentLowFps,
+    double PointOnePercentLowFps,
+    double MedianFrametimeMs,
+    double P95FrametimeMs,
+    double P99FrametimeMs,
+    double P999FrametimeMs,
+    double MaximumFrametimeMs,
+    double StandardDeviationMs,
+    double CoefficientOfVariationPercent,
+    double MicroStutterThresholdMs,
+    int MicroStutterCount,
+    int SevereStutterCount,
+    int DroppedFrameCount,
+    double StutterRatePercent,
+    double StableFrameRatePercent,
+    FpsStabilityLevel Stability,
+    IReadOnlyList<FrametimeEvent> WorstEvents,
+    IReadOnlyList<FrametimeStutterCluster> StutterClusters,
+    IReadOnlyList<string> Findings);
+
+public sealed class AdvancedFpsAnalyzer
+{
+    public AdvancedFpsReport Analyze(PresentMonReadResult input)
+    {
+        ArgumentNullException.ThrowIfNull(input);
+
+        var frames = input.Frames
+            .Where(frame =>
+                double.IsFinite(frame.FrametimeMs) &&
+                frame.FrametimeMs > 0 &&
+                frame.FrametimeMs <= 10000)
+            .OrderBy(frame => frame.TimeSeconds)
+            .ToArray();
+
+        if (frames.Length < 30)
+            return EmptyReport(frames.Length);
+
+        var times = frames.Select(x => x.FrametimeMs)
+            .OrderBy(x => x)
+            .ToArray();
+
+        var count = times.Length;
+        var mean = times.Average();
+        var median = Percentile(times, 0.50);
+        var p95 = Percentile(times, 0.95);
+        var p99 = Percentile(times, 0.99);
+        var p999 = Percentile(times, 0.999);
+        var maximum = times[^1];
+
+        var variance = times.Average(value =>
+            Math.Pow(value - mean, 2));
+
+        var standardDeviation = Math.Sqrt(variance);
+        var coefficient = mean > 0
+            ? standardDeviation / mean * 100
+            : 0;
+
+        var microThreshold = Math.Max(median * 1.5, median + 3.0);
+        var severeThreshold = Math.Max(median * 2.5, median + 8.0);
+
+        var events = frames
+            .Where(frame => frame.FrametimeMs >= microThreshold)
+            .Select(frame => new FrametimeEvent(
+                frame.TimeSeconds,
+                frame.FrametimeMs,
+                frame.FrametimeMs >= severeThreshold
+                    ? "Severe"
+                    : "Microstutter",
+                frame.FrametimeMs >= severeThreshold
+                    ? "Pico severo de frametime"
+                    : "Microstutter detectado"))
+            .ToArray();
+
+        var severeCount = events.Count(x => x.Severity == "Severe");
+        var droppedCount = frames.Count(x => x.Dropped);
+
+        var stutterRate = count > 0
+            ? events.Length * 100d / count
+            : 0;
+
+        var stableFrames = frames.Count(
+            frame => frame.FrametimeMs < microThreshold);
+
+        var stableRate = stableFrames * 100d / count;
+
+        var duration = CalculateDuration(frames);
+
+        var averageFps = mean > 0 ? 1000d / mean : 0;
+        var medianFps = median > 0 ? 1000d / median : 0;
+
+        var onePercentLow = 1000d /
+            AverageSlowest(times, 0.01);
+
+        var pointOnePercentLow = 1000d /
+            AverageSlowest(times, 0.001);
+
+        var clusters = BuildClusters(events);
+
+        var findings = BuildFindings(
+            coefficient,
+            stutterRate,
+            severeCount,
+            droppedCount,
+            p99,
+            duration);
+
+        return new AdvancedFpsReport(
+            AnalyzedAt: DateTimeOffset.UtcNow,
+            FrameCount: count,
+            DurationSeconds: duration,
+            AverageFps: averageFps,
+            MedianFps: medianFps,
+            OnePercentLowFps: onePercentLow,
+            PointOnePercentLowFps: pointOnePercentLow,
+            MedianFrametimeMs: median,
+            P95FrametimeMs: p95,
+            P99FrametimeMs: p99,
+            P999FrametimeMs: p999,
+            MaximumFrametimeMs: maximum,
+            StandardDeviationMs: standardDeviation,
+            CoefficientOfVariationPercent: coefficient,
+            MicroStutterThresholdMs: microThreshold,
+            MicroStutterCount: events.Length,
+            SevereStutterCount: severeCount,
+            DroppedFrameCount: droppedCount,
+            StutterRatePercent: stutterRate,
+            StableFrameRatePercent: stableRate,
+            Stability: Classify(
+                coefficient,
+                stutterRate,
+                severeCount,
+                duration),
+            WorstEvents: events
+                .OrderByDescending(x => x.FrametimeMs)
+                .Take(20)
+                .ToArray(),
+            StutterClusters: clusters,
+            Findings: findings);
+    }
+
+    private static double Percentile(
+        double[] sorted,
+        double percentile)
+    {
+        if (sorted.Length == 0)
+            return 0;
+
+        var position = (sorted.Length - 1) * percentile;
+        var lower = (int)Math.Floor(position);
+        var upper = (int)Math.Ceiling(position);
+
+        if (lower == upper)
+            return sorted[lower];
+
+        var fraction = position - lower;
+
+        return sorted[lower] +
+               (sorted[upper] - sorted[lower]) * fraction;
+    }
+
+    private static double AverageSlowest(
+        double[] sortedAscending,
+        double fraction)
+    {
+        var amount = Math.Max(
+            1,
+            (int)Math.Ceiling(sortedAscending.Length * fraction));
+
+        return sortedAscending
+            .TakeLast(amount)
+            .Average();
+    }
+
+    private static double CalculateDuration(
+        PresentMonFrame[] frames)
+    {
+        if (frames.Length < 2)
+            return frames.Length == 1
+                ? frames[0].FrametimeMs / 1000d
+                : 0;
+
+        var first = frames[0].TimeSeconds;
+        var last = frames[^1].TimeSeconds;
+        var elapsed = last - first;
+
+        if (double.IsFinite(elapsed) && elapsed > 0)
+            return elapsed;
+
+        return frames.Sum(x => x.FrametimeMs) / 1000d;
+    }
+
+    private static IReadOnlyList<FrametimeStutterCluster>
+        BuildClusters(FrametimeEvent[] events)
+    {
+        if (events.Length == 0)
+            return Array.Empty<FrametimeStutterCluster>();
+
+        var result = new List<FrametimeStutterCluster>();
+
+        var start = events[0].TimeSeconds;
+        var previous = start;
+        var maximum = events[0].FrametimeMs;
+        var count = 1;
+
+        foreach (var item in events.Skip(1))
+        {
+            if (item.TimeSeconds - previous <= 1.0)
+            {
+                count++;
+                previous = item.TimeSeconds;
+                maximum = Math.Max(maximum, item.FrametimeMs);
+                continue;
+            }
+
+            result.Add(new FrametimeStutterCluster(
+                start, previous, count, maximum));
+
+            start = item.TimeSeconds;
+            previous = item.TimeSeconds;
+            maximum = item.FrametimeMs;
+            count = 1;
+        }
+
+        result.Add(new FrametimeStutterCluster(
+            start, previous, count, maximum));
+
+        return result;
+    }
+
+    private static FpsStabilityLevel Classify(
+        double coefficient,
+        double stutterRate,
+        int severeCount,
+        double duration)
+    {
+        if (duration < 10)
+            return FpsStabilityLevel.InsufficientData;
+
+        if (severeCount >= 20 ||
+            stutterRate >= 10 ||
+            coefficient >= 35)
+            return FpsStabilityLevel.Critical;
+
+        if (severeCount >= 8 ||
+            stutterRate >= 5 ||
+            coefficient >= 25)
+            return FpsStabilityLevel.Poor;
+
+        if (stutterRate >= 2 ||
+            coefficient >= 15)
+            return FpsStabilityLevel.Moderate;
+
+        if (stutterRate >= 0.5 ||
+            coefficient >= 8)
+            return FpsStabilityLevel.Good;
+
+        return FpsStabilityLevel.Excellent;
+    }
+
+    private static IReadOnlyList<string> BuildFindings(
+        double coefficient,
+        double stutterRate,
+        int severeCount,
+        int droppedCount,
+        double p99,
+        double duration)
+    {
+        var findings = new List<string>();
+
+        if (duration < 30)
+            findings.Add(
+                "Captura corta: se recomienda una sesi√≥n de al menos 30 segundos.");
+
+        if (coefficient >= 15)
+            findings.Add(
+                "Variabilidad elevada: los frametimes presentan dispersi√≥n importante.");
+
+        if (stutterRate >= 2)
+            findings.Add(
+                "Microstutters frecuentes: revisar procesos en segundo plano y carga del sistema.");
+
+        if (severeCount > 0)
+            findings.Add(
+                $"Se detectaron {severeCount} picos severos de frametime.");
+
+        if (droppedCount > 0)
+            findings.Add(
+                $"La fuente informa {droppedCount} frames descartados.");
+
+        if (p99 > 25)
+            findings.Add(
+                "El percentil 99 supera 25 ms: investigar los peores momentos de la sesi√≥n.");
+
+        if (findings.Count == 0)
+            findings.Add(
+                "No se detectaron anomal√≠as importantes seg√∫n los umbrales actuales.");
+
+        return findings;
+    }
+
+    private static AdvancedFpsReport EmptyReport(int frameCount)
+    {
+        return new AdvancedFpsReport(
+            AnalyzedAt: DateTimeOffset.UtcNow,
+            FrameCount: frameCount,
+            DurationSeconds: 0,
+            AverageFps: 0,
+            MedianFps: 0,
+            OnePercentLowFps: 0,
+            PointOnePercentLowFps: 0,
+            MedianFrametimeMs: 0,
+            P95FrametimeMs: 0,
+            P99FrametimeMs: 0,
+            P999FrametimeMs: 0,
+            MaximumFrametimeMs: 0,
+            StandardDeviationMs: 0,
+            CoefficientOfVariationPercent: 0,
+            MicroStutterThresholdMs: 0,
+            MicroStutterCount: 0,
+            SevereStutterCount: 0,
+            DroppedFrameCount: 0,
+            StutterRatePercent: 0,
+            StableFrameRatePercent: 0,
+            Stability: FpsStabilityLevel.InsufficientData,
+            WorstEvents: Array.Empty<FrametimeEvent>(),
+            StutterClusters: Array.Empty<FrametimeStutterCluster>(),
+            Findings: new[]
+            {
+                "Datos insuficientes: se necesitan al menos 30 frames v√°lidos."
+            });
+    }
+}
+
+========== src\EvoOptimizer.Infrastructure\Analysis\FrametimeAnalyzer.cs ==========
+namespace EvoOptimizer.Infrastructure.Analysis;
+
+public sealed record FrametimeAnalysisReport(
+    DateTimeOffset AnalyzedAt,
+    int FrameCount,
+    double DurationSeconds,
+    double AverageFps,
+    double OnePercentLowFps,
+    double PointOnePercentLowFps,
+    double AverageFrametimeMs,
+    double MedianFrametimeMs,
+    double P99FrametimeMs,
+    double MaximumFrametimeMs,
+    double FrametimeStandardDeviationMs,
+    int StutterCount,
+    double StutterRatePercent,
+    int DroppedFrameCount,
+    string SourceColumn,
+    IReadOnlyList<string> Warnings);
+
+public sealed class FrametimeAnalyzer
+{
+    public FrametimeAnalysisReport Analyze(PresentMonReadResult input)
+    {
+        ArgumentNullException.ThrowIfNull(input);
+
+        var frames = input.Frames
+            .Where(x => double.IsFinite(x.FrametimeMs) && x.FrametimeMs > 0)
+            .ToArray();
+
+        if (frames.Length == 0)
+            throw new ArgumentException("No hay frames v·lidos.", nameof(input));
+
+        var times = frames
+            .Select(x => x.FrametimeMs)
+            .OrderBy(x => x)
+            .ToArray();
+
+        var averageFrameTime = times.Average();
+        var median = Percentile(times, 0.50);
+        var p99 = Percentile(times, 0.99);
+        var maximum = times[^1];
+
+        var duration = frames.Length > 1
+            ? frames.Max(x => x.TimeSeconds) - frames.Min(x => x.TimeSeconds)
+            : 0;
+
+        if (duration <= 0)
+            duration = times.Sum() / 1000d;
+
+        // Low FPS: promedio de los frametimes m·s lentos.
+        var slowestOnePercent = Math.Max(1, (int)Math.Ceiling(times.Length * 0.01));
+        var slowestPointOnePercent = Math.Max(1, (int)Math.Ceiling(times.Length * 0.001));
+
+        var onePercentLow = 1000d /
+            times.Skip(times.Length - slowestOnePercent).Average();
+
+        var pointOnePercentLow = 1000d /
+            times.Skip(times.Length - slowestPointOnePercent).Average();
+
+        var stutterThreshold = Math.Max(median * 1.5, median + 8d);
+
+        var stutters = frames.Count(
+            x => x.FrametimeMs > stutterThreshold);
+
+        var standardDeviation = Math.Sqrt(
+            times.Average(x => Math.Pow(x - averageFrameTime, 2)));
+
+        var warnings = input.Warnings.ToList();
+
+        if (frames.Length < 1000)
+            warnings.Add(
+                "Muestra corta: los percentiles bajos pueden ser poco representativos.");
+
+        if (duration < 30)
+            warnings.Add(
+                "DuraciÛn inferior a 30 segundos: se recomienda una captura m·s larga.");
+
+        if (input.FrametimeColumn.Equals(
+            "MsBetweenPresents",
+            StringComparison.OrdinalIgnoreCase))
+        {
+            warnings.Add(
+                "Se utilizÛ MsBetweenPresents: mide intervalos entre presents, no necesariamente frames mostrados en pantalla.");
+        }
+
+        return new FrametimeAnalysisReport(
+            DateTimeOffset.UtcNow,
+            frames.Length,
+            duration,
+            1000d / averageFrameTime,
+            onePercentLow,
+            pointOnePercentLow,
+            averageFrameTime,
+            median,
+            p99,
+            maximum,
+            standardDeviation,
+            stutters,
+            stutters * 100d / frames.Length,
+            frames.Count(x => x.Dropped),
+            input.FrametimeColumn,
+            warnings);
+    }
+
+    private static double Percentile(double[] sorted, double percentile)
+    {
+        if (sorted.Length == 1)
+            return sorted[0];
+
+        var position = (sorted.Length - 1) * percentile;
+        var lower = (int)Math.Floor(position);
+        var upper = (int)Math.Ceiling(position);
+
+        if (lower == upper)
+            return sorted[lower];
+
+        var fraction = position - lower;
+
+        return sorted[lower] +
+               (sorted[upper] - sorted[lower]) * fraction;
+    }
+}
+
+========== src\EvoOptimizer.Infrastructure\Telemetry\LivePerformanceMonitor.cs ==========
+using System.Collections.Concurrent;
+using System.Diagnostics;
+using System.Runtime.InteropServices;
+
+namespace EvoOptimizer.Infrastructure.Telemetry;
+
+public sealed record LiveMonitorOptions(
+    TimeSpan SamplingInterval,
+    double HighCpuThresholdPercent,
+    double HighMemoryThresholdPercent,
+    double HighCs2CpuThresholdPercent,
+    int HistoryCapacity)
+{
+    public static LiveMonitorOptions Default { get; } = new(
+        TimeSpan.FromSeconds(1),
+        90,
+        90,
+        85,
+        600);
+}
+
+public sealed record LivePerformanceSnapshot(
+    DateTimeOffset Timestamp,
+    double SystemCpuPercent,
+    double? Cs2CpuPercent,
+    double TotalMemoryMb,
+    double AvailableMemoryMb,
+    double MemoryUsagePercent,
+    double Cs2MemoryMb,
+    int Cs2ProcessCount,
+    int ActiveProcessCount,
+    IReadOnlyList<int> Cs2ProcessIds,
+    IReadOnlyList<string> Alerts);
+
+public sealed class LivePerformanceMonitor : IDisposable
+{
+    private readonly LiveMonitorOptions _options;
+    private readonly ConcurrentQueue<LivePerformanceSnapshot> _history = new();
+    private readonly Dictionary<int, TimeSpan> _previousCs2Cpu = new();
+
+    private ulong? _previousIdle;
+    private ulong? _previousKernel;
+    private ulong? _previousUser;
+    private DateTimeOffset? _previousCapture;
+    private int _running;
+    private bool _disposed;
+
+    public event Action<LivePerformanceSnapshot>? SnapshotCaptured;
+
+    public LivePerformanceMonitor(LiveMonitorOptions? options = null)
+    {
+        _options = options ?? LiveMonitorOptions.Default;
+
+        if (_options.SamplingInterval < TimeSpan.FromMilliseconds(250))
+            throw new ArgumentOutOfRangeException(
+                nameof(options), "El intervalo mÌnimo es 250 ms.");
+
+        if (_options.HistoryCapacity < 1)
+            throw new ArgumentOutOfRangeException(
+                nameof(options), "El historial debe tener capacidad positiva.");
+    }
+
+    public IReadOnlyList<LivePerformanceSnapshot> GetHistory()
+        => _history.ToArray();
+
+    public LivePerformanceSnapshot? GetLatest()
+        => _history.TryPeek(out _)
+            ? _history.LastOrDefault()
+            : null;
+
+    public async Task StartAsync(
+        CancellationToken cancellationToken = default)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        if (Interlocked.Exchange(ref _running, 1) != 0)
+            throw new InvalidOperationException(
+                "El monitor ya est· en ejecuciÛn.");
+
+        try
+        {
+            using var timer = new PeriodicTimer(_options.SamplingInterval);
+
+            // Primera muestra: establece la referencia de CPU.
+            CaptureAndPublish();
+
+            while (await timer.WaitForNextTickAsync(cancellationToken))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                CaptureAndPublish();
+            }
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _running, 0);
+        }
+    }
+
+    private void CaptureAndPublish()
+    {
+        var snapshot = Capture();
+
+        _history.Enqueue(snapshot);
+
+        while (_history.Count > _options.HistoryCapacity)
+            _history.TryDequeue(out _);
+
+        try
+        {
+            SnapshotCaptured?.Invoke(snapshot);
+        }
+        catch
+        {
+            // Un consumidor externo no debe detener la monitorizaciÛn.
+        }
+    }
+
+    private LivePerformanceSnapshot Capture()
+    {
+        var now = DateTimeOffset.UtcNow;
+
+        var cpu = ReadSystemCpu();
+        var memory = ReadMemory();
+        var processes = ReadProcesses(now);
+
+        var alerts = new List<string>();
+
+        if (cpu >= _options.HighCpuThresholdPercent)
+            alerts.Add("HIGH_SYSTEM_CPU");
+
+        if (memory.UsagePercent >= _options.HighMemoryThresholdPercent)
+            alerts.Add("HIGH_MEMORY_PRESSURE");
+
+        if (processes.Cs2CpuPercent >= _options.HighCs2CpuThresholdPercent)
+            alerts.Add("HIGH_CS2_CPU");
+
+        if (processes.Cs2Count == 0)
+            alerts.Add("CS2_NOT_RUNNING");
+
+        return new LivePerformanceSnapshot(
+            now,
+            cpu,
+            processes.Cs2CpuPercent,
+            memory.TotalMb,
+            memory.AvailableMb,
+            memory.UsagePercent,
+            processes.Cs2MemoryMb,
+            processes.Cs2Count,
+            processes.ActiveCount,
+            processes.Cs2ProcessIds,
+            alerts);
+    }
+
+    private double ReadSystemCpu()
+    {
+        if (!GetSystemTimes(
+            out var idleTime,
+            out var kernelTime,
+            out var userTime))
+        {
+            return 0;
+        }
+
+        var idle = ToUInt64(idleTime);
+        var kernel = ToUInt64(kernelTime);
+        var user = ToUInt64(userTime);
+
+        var result = 0d;
+
+        if (_previousIdle.HasValue &&
+            _previousKernel.HasValue &&
+            _previousUser.HasValue)
+        {
+            var idleDelta = Delta(idle, _previousIdle.Value);
+            var kernelDelta = Delta(kernel, _previousKernel.Value);
+            var userDelta = Delta(user, _previousUser.Value);
+
+            var total = kernelDelta + userDelta;
+
+            if (total > 0 && total >= idleDelta)
+                result = (double)(total - idleDelta) / total * 100;
+        }
+
+        _previousIdle = idle;
+        _previousKernel = kernel;
+        _previousUser = user;
+
+        return Math.Clamp(result, 0, 100);
+    }
+
+    private (double TotalMb, double AvailableMb, double UsagePercent)
+        ReadMemory()
+    {
+        var status = new MemoryStatusEx
+        {
+            Length = (uint)Marshal.SizeOf<MemoryStatusEx>()
+        };
+
+        if (!GlobalMemoryStatusEx(ref status) ||
+            status.TotalPhysical == 0)
+        {
+            return (0, 0, 0);
+        }
+
+        var total = status.TotalPhysical / 1024d / 1024d;
+        var available = status.AvailablePhysical / 1024d / 1024d;
+        var usage = (total - available) / total * 100;
+
+        return (
+            Math.Round(total, 1),
+            Math.Round(available, 1),
+            Math.Round(Math.Clamp(usage, 0, 100), 1));
+    }
+
+    private ProcessMetrics ReadProcesses(DateTimeOffset now)
+    {
+        using var processList = new ProcessCollection(Process.GetProcesses());
+
+        var activeCount = 0;
+        var cs2Count = 0;
+        var cs2Memory = 0L;
+        var cs2Cpu = 0d;
+        var cs2Ids = new List<int>();
+        var currentCpu = new Dictionary<int, TimeSpan>();
+
+        foreach (var process in processList.Items)
+        {
+            try
+            {
+                activeCount++;
+
+                if (!string.Equals(
+                    process.ProcessName,
+                    "cs2",
+                    StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                cs2Count++;
+                cs2Ids.Add(process.Id);
+                cs2Memory += process.WorkingSet64;
+
+                var cpuTime = process.TotalProcessorTime;
+                currentCpu[process.Id] = cpuTime;
+
+                if (_previousCs2Cpu.TryGetValue(
+                    process.Id, out var previous))
+                {
+                    var delta = cpuTime - previous;
+
+                    if (delta >= TimeSpan.Zero &&
+                        _previousCapture.HasValue)
+                    {
+                        var elapsed = (now - _previousCapture.Value)
+                            .TotalSeconds;
+
+                        if (elapsed > 0)
+                        {
+                            cs2Cpu += delta.TotalSeconds /
+                                (elapsed * Environment.ProcessorCount) * 100;
+                        }
+                    }
+                }
+            }
+            catch (InvalidOperationException)
+            {
+                // El proceso pudo finalizar durante la captura.
+            }
+            catch (System.ComponentModel.Win32Exception)
+            {
+                // Acceso restringido: se omite ese proceso.
+            }
+        }
+
+        _previousCs2Cpu.Clear();
+
+        foreach (var item in currentCpu)
+            _previousCs2Cpu[item.Key] = item.Value;
+
+        _previousCapture = now;
+
+        return new ProcessMetrics(
+            Math.Round(Math.Clamp(cs2Cpu, 0, 100), 1),
+            Math.Round(cs2Memory / 1024d / 1024d, 1),
+            cs2Count,
+            activeCount,
+            cs2Ids);
+    }
+
+    private static ulong Delta(ulong current, ulong previous)
+        => current >= previous ? current - previous : 0;
+
+    private static ulong ToUInt64(FileTime value)
+        => ((ulong)value.HighDateTime << 32) | value.LowDateTime;
+
+    public void Dispose()
+    {
+        if (_disposed)
+            return;
+
+        _disposed = true;
+        SnapshotCaptured = null;
+        _history.Clear();
+        _previousCs2Cpu.Clear();
+    }
+
+    private sealed record ProcessMetrics(
+        double Cs2CpuPercent,
+        double Cs2MemoryMb,
+        int Cs2Count,
+        int ActiveCount,
+        IReadOnlyList<int> Cs2ProcessIds);
+
+    private sealed class ProcessCollection : IDisposable
+    {
+        public Process[] Items { get; }
+
+        public ProcessCollection(Process[] items)
+            => Items = items;
+
+        public void Dispose()
+        {
+            foreach (var process in Items)
+                process.Dispose();
+        }
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct FileTime
+    {
+        public uint LowDateTime;
+        public uint HighDateTime;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MemoryStatusEx
+    {
+        public uint Length;
+        public uint MemoryLoad;
+        public ulong TotalPhysical;
+        public ulong AvailablePhysical;
+        public ulong TotalPageFile;
+        public ulong AvailablePageFile;
+        public ulong TotalVirtual;
+        public ulong AvailableVirtual;
+        public ulong AvailableExtendedVirtual;
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetSystemTimes(
+        out FileTime idleTime,
+        out FileTime kernelTime,
+        out FileTime userTime);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GlobalMemoryStatusEx(
+        ref MemoryStatusEx buffer);
+}
+
+========== src\EvoOptimizer.Infrastructure\Optimization\OptimizationOrchestrator.cs ==========
+using EvoOptimizer.Core.Optimization;
+
+namespace EvoOptimizer.Infrastructure.Optimization;
+
+public sealed record OptimizationOrchestrationReport(
+    Guid Id,
+    DateTimeOffset GeneratedAt,
+    global::EvoOptimizer.Core.Optimization.AdaptiveOptimizationReport AdaptiveReport,
+    IReadOnlyList<RegressionGuardResult> RegressionResults,
+    int SignalsAnalyzed,
+    int ProfilesMonitored,
+    int ConfirmedRegressions,
+    int SuspectedRegressions,
+    int PendingInvestigations,
+    IReadOnlyList<string> SystemAlerts,
+    string OverallStatus);
+
+public sealed class OptimizationOrchestrator
+{
+    private readonly global::EvoOptimizer.Core.Optimization.AdaptiveOptimizationEngine _adaptiveEngine;
+    private readonly RegressionGuard _regressionGuard;
+
+    public OptimizationOrchestrator(
+        global::EvoOptimizer.Core.Optimization.AdaptiveOptimizationEngine adaptiveEngine,
+        RegressionGuard regressionGuard)
+    {
+        _adaptiveEngine = adaptiveEngine ??
+            throw new ArgumentNullException(nameof(adaptiveEngine));
+
+        _regressionGuard = regressionGuard ??
+            throw new ArgumentNullException(nameof(regressionGuard));
+    }
+
+    public OptimizationOrchestrationReport Analyze(
+        IEnumerable<OptimizationSignal> signals,
+        IEnumerable<RegressionWatch> watches,
+        bool benchmarkAvailable = false)
+    {
+        ArgumentNullException.ThrowIfNull(signals);
+        ArgumentNullException.ThrowIfNull(watches);
+
+        var signalList = signals.ToArray();
+        var watchList = watches.ToArray();
+
+        var adaptiveReport = _adaptiveEngine.Evaluate(
+            signalList,
+            benchmarkAvailable);
+
+        var regressionResults = watchList
+            .Select(_regressionGuard.Evaluate)
+            .ToArray();
+
+        var confirmed = regressionResults.Count(x =>
+            x.Status == RegressionStatus.Confirmed);
+
+        var suspected = regressionResults.Count(x =>
+            x.Status == RegressionStatus.Suspected);
+
+        var pending = regressionResults.Count(x =>
+            x.Status == RegressionStatus.Inconclusive);
+
+        var alerts = new List<string>();
+
+        if (confirmed > 0)
+        {
+            alerts.Add(
+                $"{confirmed} regresi√≥n(es) confirmada(s). Revisar Restore Center.");
+        }
+
+        if (suspected > 0)
+        {
+            alerts.Add(
+                $"{suspected} posible(s) regresi√≥n(es). Se necesitan nuevas mediciones.");
+        }
+
+        if (pending > 0)
+        {
+            alerts.Add(
+                $"{pending} seguimiento(s) sin evidencia suficiente.");
+        }
+
+        if (!benchmarkAvailable)
+        {
+            alerts.Add(
+                "No hay benchmark disponible. Las optimizaciones que lo requieren deben permanecer bloqueadas.");
+        }
+
+        var status = confirmed > 0
+            ? "REGRESSION_DETECTED"
+            : suspected > 0
+                ? "MONITORING_REQUIRED"
+                : pending > 0
+                    ? "INSUFFICIENT_EVIDENCE"
+                    : "SYSTEM_ANALYZED";
+
+        return new OptimizationOrchestrationReport(
+            Guid.NewGuid(),
+            DateTimeOffset.UtcNow,
+            adaptiveReport,
+            regressionResults,
+            signalList.Length,
+            watchList.Length,
+            confirmed,
+            suspected,
+            pending,
+            alerts,
+            status);
+    }
+
+    public IReadOnlyList<RecoveryDecision> PrepareRecoveryActions(
+        IEnumerable<RegressionWatch> watches,
+        OptimizationOrchestrationReport report,
+        RegressionRecoveryService recoveryService)
+    {
+        ArgumentNullException.ThrowIfNull(watches);
+        ArgumentNullException.ThrowIfNull(report);
+        ArgumentNullException.ThrowIfNull(recoveryService);
+
+        var watchList = watches.ToArray();
+
+        return report.RegressionResults
+            .Select(result =>
+            {
+                var watch = watchList.FirstOrDefault(x =>
+                    x.Id == result.WatchId);
+
+                if (watch is null)
+                {
+                    return new RecoveryDecision(
+                        false,
+                        false,
+                        "No se encontr√≥ el seguimiento original.",
+                        null);
+                }
+
+                return recoveryService.PrepareRecovery(watch, result);
+            })
+            .ToArray();
+    }
+}
+
+========== src\EvoOptimizer.Core\Telemetry\TelemetrySnapshot.cs ==========
+namespace EvoOptimizer.Core.Telemetry;
+
+/// <summary>
+/// Muestra puntual. Todo valor es nullable: null significa "no medido / no disponible",
+/// nunca "cero". Ning˙n consumidor debe asumir un valor por defecto.
+/// </summary>
+public sealed record TelemetrySnapshot(
+    DateTimeOffset Timestamp,
+    double? CpuUtilizationPercent,
+    double? MemoryLoadPercent,
+    ulong? MemoryTotalBytes,
+    ulong? MemoryAvailableBytes,
+    ulong? CommitUsedBytes,
+    ulong? CommitLimitBytes);
