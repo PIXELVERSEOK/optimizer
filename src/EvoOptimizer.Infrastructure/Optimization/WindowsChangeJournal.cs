@@ -100,7 +100,8 @@ public sealed class WindowsChangeJournal
                 or WindowsOptimizationStatus.Applied
                 or WindowsOptimizationStatus.Verified
                 or WindowsOptimizationStatus.PerformanceVerified
-                or WindowsOptimizationStatus.PerformanceInconclusive)
+                or WindowsOptimizationStatus.PerformanceInconclusive
+                or WindowsOptimizationStatus.RollbackFailed)
             .ToArray();
     }
 

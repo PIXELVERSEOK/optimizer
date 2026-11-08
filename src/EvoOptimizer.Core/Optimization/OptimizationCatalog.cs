@@ -284,6 +284,9 @@ public static class OptimizationCatalogBuilder
             WindowsOptimizationStatus.PerformanceInconclusive =>
                 (OptimizationCatalogState.Inconclusive, false, true, true,
                  "Resultado inconcluso: no se declara mejora."),
+            WindowsOptimizationStatus.RollbackFailed =>
+                (OptimizationCatalogState.RollbackAvailable, false, true, true,
+                 $"La restauración no pudo verificarse. Reintenta el rollback y revisa el estado del sistema. {change.Error}"),
             WindowsOptimizationStatus.Failed =>
                 (item.CanApply
                     ? OptimizationCatalogState.Available

@@ -131,7 +131,9 @@ public sealed class WindowsOptimizationService
             EdgeBackgroundDisabled:
                 ReadDword(Registry.CurrentUser, EdgePolicyPath, EdgeBackgroundValue) == 0 &&
                 ReadDword(Registry.CurrentUser, EdgePolicyPath, EdgeBackgroundValue) is not null,
-            WindowsSuggestionsDisabled: AreSuggestionsDisabled());
+            WindowsSuggestionsDisabled: AreSuggestionsDisabled(),
+            IsOnAcPower: config.IsOnAcPower,
+            HasHighPerformancePlan: config.HasHighPerformancePlan);
     }
 
     // ── Aplicación ───────────────────────────────────────────────────────────
@@ -162,6 +164,22 @@ public sealed class WindowsOptimizationService
             return new(
                 WindowsOptimizationStatus.Unavailable,
                 "Las aplicaciones de inicio se desactivan una por una desde la lista.");
+        }
+
+        if (target == WindowsOptimizationTarget.PowerPlan)
+        {
+            // Defensa en profundidad: el planificador ya exige AC verificada,
+            // pero se relee aquí porque la fuente puede haber cambiado desde la
+            // captura. Nunca se propone un plan de mayor consumo con batería o
+            // estado de alimentación desconocido.
+            bool? onAc = new WindowsPowerTelemetryService().ReadCurrent().IsOnAcPower;
+            if (onAc != true)
+            {
+                return new(
+                    WindowsOptimizationStatus.Unavailable,
+                    "Se exige alimentación AC verificada en el momento de aplicar; " +
+                    "con batería o estado desconocido no se cambia el plan de energía.");
+            }
         }
 
         await _mutex.WaitAsync(cancellationToken);
@@ -327,21 +345,49 @@ public sealed class WindowsOptimizationService
         }
         catch (Exception ex)
         {
-            TryRestore(original);
+            var restoreErrors = TryRestore(original).ToList();
+            bool restoreVerified = false;
+
+            try
+            {
+                var restored = capture();
+                restoreVerified = restored is not null &&
+                    SameState(restored, original);
+            }
+            catch (Exception verificationError)
+            {
+                restoreErrors.Add(
+                    $"No se pudo verificar la restauración: {verificationError.Message}");
+            }
+
+            if (!restoreVerified)
+            {
+                restoreErrors.Add(
+                    "El estado original no pudo verificarse después del rollback automático.");
+            }
 
             change = change with
             {
-                Status = WindowsOptimizationStatus.Failed,
+                Status = restoreVerified
+                    ? WindowsOptimizationStatus.Failed
+                    : WindowsOptimizationStatus.RollbackFailed,
                 CompletedAt = DateTimeOffset.UtcNow,
-                Error = ex.Message
+                Error = restoreErrors.Count == 0
+                    ? ex.Message
+                    : $"{ex.Message} Rollback: {string.Join(" ", restoreErrors)}"
             };
 
             await _journal.UpdateAsync(change, cancellationToken);
             await SaveHistoryAsync(change, cancellationToken);
 
             return new(
-                WindowsOptimizationStatus.Failed,
-                $"No se pudo aplicar {DescribeTarget(target)}: {ex.Message}. Se restauró el estado original.",
+                change.Status,
+                restoreVerified
+                    ? $"No se pudo aplicar {DescribeTarget(target)}: {ex.Message}. " +
+                      "La restauración del estado original fue verificada."
+                    : $"No se pudo aplicar {DescribeTarget(target)} y la restauración " +
+                      "automática no pudo verificarse. Revisa el estado del sistema e " +
+                      "intenta la restauración manual desde el diario.",
                 change);
         }
     }
@@ -372,7 +418,8 @@ public sealed class WindowsOptimizationService
                 WindowsOptimizationStatus.Verified or
                 WindowsOptimizationStatus.PerformanceVerified or
                 WindowsOptimizationStatus.PerformanceInconclusive or
-                WindowsOptimizationStatus.Failed))
+                WindowsOptimizationStatus.Failed or
+                WindowsOptimizationStatus.RollbackFailed))
             {
                 return new(
                     WindowsOptimizationStatus.Unavailable,
@@ -383,7 +430,8 @@ public sealed class WindowsOptimizationService
 
             if (change.Status is not (
                     WindowsOptimizationStatus.Failed or
-                    WindowsOptimizationStatus.Pending) &&
+                    WindowsOptimizationStatus.Pending or
+                    WindowsOptimizationStatus.RollbackFailed) &&
                 current is not null &&
                 !SameState(current, change.AppliedOperations))
             {
@@ -423,9 +471,20 @@ public sealed class WindowsOptimizationService
             }
             catch (Exception ex)
             {
+                change = change with
+                {
+                    Status = WindowsOptimizationStatus.RollbackFailed,
+                    CompletedAt = DateTimeOffset.UtcNow,
+                    Error = ex.Message
+                };
+                await _journal.UpdateAsync(change, cancellationToken);
+                await SaveHistoryAsync(change, cancellationToken);
+
                 return new(
-                    WindowsOptimizationStatus.Failed,
-                    $"No se pudo revertir el ajuste: {ex.Message}");
+                    WindowsOptimizationStatus.RollbackFailed,
+                    $"No se pudo verificar la reversión: {ex.Message}. " +
+                    "El cambio permanece en el diario para reintentar la restauración.",
+                    change);
             }
         }
         finally
@@ -480,6 +539,92 @@ public sealed class WindowsOptimizationService
             return new(
                 WindowsOptimizationStatus.Unavailable,
                 "El cambio no está aplicado; no hay nada que evaluar.");
+        }
+
+        string expectedModificationKey = change.Target == WindowsOptimizationTarget.StartupApp
+            ? change.SettingKey
+            : $"windows:{change.Target}";
+        OptimizationModificationKind expectedKind =
+            change.Target == WindowsOptimizationTarget.StartupApp
+                ? OptimizationModificationKind.Process
+                : OptimizationModificationKind.Windows;
+
+        if (!string.Equals(
+                baseline.Context.ModificationKey,
+                expectedModificationKey,
+                StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(
+                candidate.Context.ModificationKey,
+                expectedModificationKey,
+                StringComparison.OrdinalIgnoreCase) ||
+            baseline.Context.Kind != expectedKind ||
+            candidate.Context.Kind != expectedKind)
+        {
+            return new(
+                WindowsOptimizationStatus.MeasurementRequired,
+                "La línea base y la medición posterior deben pertenecer a este " +
+                "cambio específico. No se evaluó ni se declaró una mejora.");
+        }
+
+        if (baseline.CapturedAt >= change.CreatedAt ||
+            candidate.CapturedAt <= change.CreatedAt)
+        {
+            return new(
+                WindowsOptimizationStatus.MeasurementRequired,
+                "La línea base debe ser anterior a la aplicación y la medición " +
+                "posterior debe ser posterior al cambio. No se evaluó el resultado.");
+        }
+
+        if (change.Target == WindowsOptimizationTarget.StartupApp &&
+            !StartupBootSessionGuard.HasRebooted(
+                baseline.Context.BootSessionId,
+                candidate.Context.BootSessionId))
+        {
+            return new(
+                WindowsOptimizationStatus.MeasurementRequired,
+                "Se requiere una captura de línea base anterior y otra posterior a un " +
+                "reinicio de Windows. Sin evidencia de reinicio, EVO no evalúa ni " +
+                "declara una mejora de arranque.");
+        }
+
+        if (change.Target == WindowsOptimizationTarget.StartupApp)
+        {
+            var startupEvidence = new OptimizationEvidenceResult(
+                baseline.Context.ModificationId,
+                expectedModificationKey,
+                baseline.Context.ModificationName,
+                OptimizationEvidenceVerdict.NotVerifiable,
+                ShouldKeep: false,
+                ShouldRollback: false,
+                RequiresUserDecision: false,
+                Array.Empty<OptimizationMetricComparison>(),
+                new[]
+                {
+                    "Se detectó un reinicio entre las capturas; las métricas generales de 30 s no miden el tiempo de inicio de esta aplicación."
+                },
+                new[]
+                {
+                    "No existe una medición de duración de arranque atribuible a esta entrada. El efecto de rendimiento es NO VERIFICABLE."
+                },
+                DateTimeOffset.UtcNow);
+
+            var unverifiable = change with
+            {
+                Status = WindowsOptimizationStatus.PerformanceInconclusive,
+                Evidence = startupEvidence,
+                CompletedAt = DateTimeOffset.UtcNow,
+                Error = null
+            };
+
+            await _journal.UpdateAsync(unverifiable, cancellationToken);
+            await SaveEvidenceHistoryAsync(baseline, candidate, startupEvidence, cancellationToken);
+            await SaveHistoryAsync(unverifiable, cancellationToken);
+
+            return new(
+                WindowsOptimizationStatus.PerformanceInconclusive,
+                "NO VERIFICABLE: EVO no mide la duración de arranque atribuible a esta aplicación. " +
+                "El cambio permanece aplicado y reversible, pero no se declara una mejora.",
+                unverifiable);
         }
 
         var evidence = _evidenceEvaluator.Evaluate(baseline, candidate);
@@ -773,19 +918,25 @@ public sealed class WindowsOptimizationService
         }
     }
 
-    private void TryRestore(IReadOnlyList<WindowsChangeOperation> operations)
+    private IReadOnlyList<string> TryRestore(
+        IReadOnlyList<WindowsChangeOperation> operations)
     {
+        var errors = new List<string>();
+
         foreach (var operation in operations.Reverse())
         {
             try
             {
                 Execute(operation);
             }
-            catch
+            catch (Exception ex)
             {
-                // El rollback manual sigue disponible desde el diario.
+                errors.Add(
+                    $"No se pudo restaurar {operation.Target}: {ex.Message}");
             }
         }
+
+        return errors;
     }
 
     // ── Verificación y utilidades ────────────────────────────────────────────

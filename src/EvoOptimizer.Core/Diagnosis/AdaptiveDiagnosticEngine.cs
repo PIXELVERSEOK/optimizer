@@ -301,15 +301,44 @@ private static double? ParseStorageNumber(string? value)
 
         foreach (var gpu in gpus)
         {
+            int? index = GetArrayIndex(gpu.Name);
+
+            string? driverVersion = index.HasValue
+                ? FindIndexedValue(audit, "GPU", index.Value, "DriverVersion")
+                : FindValue(audit, "GPU", "DriverVersion");
+            string? driverDate = index.HasValue
+                ? FindIndexedValue(audit, "GPU", index.Value, "DriverDate")
+                : FindValue(audit, "GPU", "DriverDate");
+
+            string driverEvidence =
+                $"DriverVersion: {driverVersion ?? "UNKNOWN"}; " +
+                $"DriverDate: {driverDate ?? "UNKNOWN"}.";
+
             findings.Add(new DiagnosticFinding(
                 "GPU_PROFILE",
                 DiagnosticSeverity.Information,
                 $"GPU identificada: {gpu.Value ?? "desconocida"}",
-                "La auditoría identifica el adaptador gráfico. AdapterRAM no se considera VRAM dedicada fiable en gráficos integrados.",
-                $"{gpu.Name}: {gpu.Value ?? "sin dato"}.",
+                "La auditoría identifica el adaptador gráfico y su driver instalado. " +
+                "AdapterRAM no se considera VRAM dedicada fiable en gráficos integrados. " +
+                "La antigüedad del driver no se evalúa sin una fuente de referencia verificada.",
+                $"{gpu.Name}: {gpu.Value ?? "sin dato"}. {driverEvidence}",
                 gpu.Confidence,
                 "Medir carga de GPU, frecuencia, temperatura y tiempos de fotograma durante CS2 antes de decidir ajustes gráficos."
             ));
+
+            if (driverVersion is null && driverDate is null)
+            {
+                findings.Add(new DiagnosticFinding(
+                    $"GPU_DRIVER_UNKNOWN_{index?.ToString() ?? "X"}",
+                    DiagnosticSeverity.Information,
+                    "Driver de GPU no verificable",
+                    "Windows no informó versión ni fecha del driver para este adaptador; " +
+                    "no se puede diagnosticar su estado ni recomendar una actualización.",
+                    driverEvidence,
+                    "UNKNOWN",
+                    "Consultar el administrador de dispositivos o el fabricante antes de cualquier cambio de driver."
+                ));
+            }
         }
     }
 
@@ -568,9 +597,7 @@ private static double? ParseStorageNumber(string? value)
     {
         findings.Add(new DiagnosticFinding(
             "SERVICES_AUTO_STATUS",
-            snapshot.Services.StoppedAutoStartCount > 0
-                ? DiagnosticSeverity.Information
-                : DiagnosticSeverity.Information,
+            DiagnosticSeverity.Information,
             "Servicios de inicio automático",
             $"{snapshot.Services.AutoStartCount} servicios en inicio automático; " +
             $"{snapshot.Services.StoppedAutoStartCount} detenidos.",
@@ -580,6 +607,23 @@ private static double? ParseStorageNumber(string? value)
             "SYSTEM_REPORTED",
             "EVO no desactiva servicios automáticamente. Revisar cada caso con " +
             "documentación del fabricante antes de cambiarlo."));
+
+        int serviceCount = snapshot.Services.Inventory?.Count ?? 0;
+        int runningServiceCount = snapshot.Services.Inventory?.Count(service =>
+            string.Equals(service.State, "Running", StringComparison.OrdinalIgnoreCase)) ?? 0;
+
+        findings.Add(new DiagnosticFinding(
+            "SERVICES_INVENTORY",
+            DiagnosticSeverity.Information,
+            "Inventario de servicios",
+            serviceCount == 0
+                ? "No se pudo obtener el inventario de servicios."
+                : $"{serviceCount} servicios consultados; {runningServiceCount} en ejecución.",
+            serviceCount == 0
+                ? "La consulta CIM no devolvió servicios."
+                : "El estado y el modo de inicio son evidencia de inventario, no una prueba de que un servicio sea innecesario.",
+            "SYSTEM_REPORTED",
+            "No se recomienda ni aplica ningún cambio de servicio sin una regla de compatibilidad específica y evidencia del uso del equipo."));
 
         findings.Add(new DiagnosticFinding(
             "STARTUP_APPS_SNAPSHOT",
@@ -735,6 +779,19 @@ private static int? GetArrayIndex(string name)
     return int.TryParse(name.Substring(1, end - 1), out int index)
         ? index
         : null;
+}
+
+private static string? FindIndexedValue(
+    SystemAuditReport audit,
+    string category,
+    int index,
+    string property)
+{
+    string name = $"[{index}] {property}";
+
+    return audit.Facts.FirstOrDefault(f =>
+        f.Category == category &&
+        string.Equals(f.Name, name, StringComparison.OrdinalIgnoreCase))?.Value;
 }
 
 private static double? FindIndexedNumber(

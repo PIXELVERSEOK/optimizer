@@ -1,4 +1,6 @@
-﻿namespace EvoOptimizer.Infrastructure.History;
+﻿using EvoOptimizer.Core.Audit;
+
+namespace EvoOptimizer.Infrastructure.History;
 
 public sealed record HistoryCategorySummary(
     string Category,
@@ -59,6 +61,14 @@ public sealed class HistoryDashboardService
                 record => record.CapturedAt >= last7Days),
             Categories: categories,
             RecentRecords: recentRecords);
+    }
+
+    public Task<Guid> SaveAuditAsync(
+        SystemAuditReport report,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(report);
+        return _historyStore.SaveAuditAsync(report, cancellationToken);
     }
 
     public async Task<IReadOnlyList<HistoryRecord>> LoadCategoryAsync(

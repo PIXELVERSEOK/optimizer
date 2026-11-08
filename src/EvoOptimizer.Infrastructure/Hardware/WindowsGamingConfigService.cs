@@ -11,7 +11,13 @@ public sealed record WindowsGamingConfig(
     bool GameModeEnabled,
     bool HagsEnabled,
     string PowerPlanName,
-    IReadOnlyList<string> DiagnosticNotes);
+    IReadOnlyList<string> DiagnosticNotes,
+    bool? IsOnAcPower = null,
+    bool HasHighPerformancePlan = false,
+    string? ActivePowerPlanGuid = null,
+    uint? ProcessorEppAc = null,
+    uint? ProcessorEppDc = null,
+    IReadOnlyList<string>? PowerDiagnostics = null);
 
 [SupportedOSPlatform("windows")]
 public sealed class WindowsGamingConfigService
@@ -26,6 +32,10 @@ public sealed class WindowsGamingConfigService
         bool gameMode = ReadDword(Registry.CurrentUser, GameBarPath, "AllowAutoGameMode") != 0; // Default en Win11 suele ser 1
         bool hags = ReadDword(Registry.LocalMachine, GraphicsDriversPath, "HwSchMode") == 2;
         string powerPlan = ReadActivePowerPlan();
+        WindowsPowerTelemetry powerTelemetry = ReadPowerTelemetrySafe();
+        bool hasHighPerformancePlan = FindPowerPlanGuid(
+            "Alto rendimiento",
+            "High performance") is not null;
 
         var notes = new List<string>();
 
@@ -41,15 +51,45 @@ public sealed class WindowsGamingConfigService
         if (powerPlan.Contains("Equilibrado", StringComparison.OrdinalIgnoreCase) ||
             powerPlan.Contains("Balanced", StringComparison.OrdinalIgnoreCase))
         {
-            notes.Add("Plan de energía en modo Equilibrado: puede retrasar el escalado de frecuencias de CPU/iGPU.");
+            notes.Add("Plan de energía Equilibrado detectado. El nombre del plan por sí solo no demuestra una limitación de frecuencia o FPS.");
         }
+
+        notes.AddRange(powerTelemetry.Warnings.Select(warning => $"Energía: {warning}"));
 
         return new WindowsGamingConfig(
             GameDvrEnabled: gameDvr,
             GameModeEnabled: gameMode,
             HagsEnabled: hags,
             PowerPlanName: powerPlan,
-            DiagnosticNotes: notes);
+            DiagnosticNotes: notes,
+            IsOnAcPower: powerTelemetry.IsOnAcPower,
+            HasHighPerformancePlan: hasHighPerformancePlan,
+            ActivePowerPlanGuid: powerTelemetry.ActiveSchemeGuid,
+            ProcessorEppAc: powerTelemetry.ProcessorEppAc,
+            ProcessorEppDc: powerTelemetry.ProcessorEppDc,
+            PowerDiagnostics: powerTelemetry.Warnings);
+    }
+
+    /// <summary>
+    /// La telemetría de energía es opcional y de solo lectura. Si el sistema no
+    /// expone algún dato (o un P/Invoke falla), se degrada a UNKNOWN con una
+    /// advertencia en vez de propagar la excepción al constructor de la app.
+    /// </summary>
+    private static WindowsPowerTelemetry ReadPowerTelemetrySafe()
+    {
+        try
+        {
+            return new WindowsPowerTelemetryService().ReadCurrent();
+        }
+        catch (Exception ex)
+        {
+            return new WindowsPowerTelemetry(
+                IsOnAcPower: null,
+                ActiveSchemeGuid: null,
+                ProcessorEppAc: null,
+                ProcessorEppDc: null,
+                Warnings: new[] { $"Telemetría de energía no disponible: {ex.Message}" });
+        }
     }
 
     public IReadOnlyList<OptimizationSignal> GenerateSignals(WindowsGamingConfig config)
@@ -114,6 +154,28 @@ public sealed class WindowsGamingConfigService
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// Activa un plan de energía por GUID verificado (obtenido de powercfg /list).
+    /// Lanza si powercfg no confirma el cambio; el llamador guarda el GUID
+    /// original antes de invocarlo para poder restaurarlo.
+    /// </summary>
+    public void SetActivePowerPlan(string guid)
+    {
+        if (string.IsNullOrWhiteSpace(guid) || ExtractGuid(guid) is null)
+            throw new ArgumentException("El GUID del plan de energía no es válido.", nameof(guid));
+
+        string? output = RunPowerCfg($"/setactive {guid}");
+
+        if (output is null)
+            throw new InvalidOperationException("No se pudo ejecutar powercfg para cambiar el plan.");
+
+        string? active = ReadActivePowerPlanGuid();
+
+        if (!string.Equals(active, guid, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException(
+                $"powercfg no confirmó el plan solicitado ({guid}); sigue activo {active ?? "desconocido"}.");
     }
 
     /// <summary>

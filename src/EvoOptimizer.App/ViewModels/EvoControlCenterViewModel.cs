@@ -465,16 +465,28 @@ public sealed partial class EvoControlCenterViewModel :
         }
     }
 
-    public void RollbackPriority()
+    public bool RollbackPriority()
     {
         if (_activePriorityToken is null)
-            return;
+        {
+            PriorityStatusText = "Prioridad: no hay un cambio activo de EVO que restaurar.";
+            return true;
+        }
 
         var result = _priorityOptimizer.Rollback(_activePriorityToken.Id);
-        PriorityStatusText = "Prioridad: Normal (Restaurada)";
-        _activePriorityToken = null;
-        OnPropertyChanged(nameof(HasActivePriorityChange));
-        OnPropertyChanged(nameof(HasActiveOptimizations));
+        PriorityStatusText = result.Status == PriorityOptimizationStatus.RolledBack
+            ? $"Prioridad restaurada: {result.Message}"
+            : $"Prioridad no restaurada: {result.Message}";
+
+        if (result.Status is PriorityOptimizationStatus.RolledBack
+            or PriorityOptimizationStatus.IdentityMismatch)
+        {
+            _activePriorityToken = null;
+            OnPropertyChanged(nameof(HasActivePriorityChange));
+            OnPropertyChanged(nameof(HasActiveOptimizations));
+        }
+
+        return result.Status == PriorityOptimizationStatus.RolledBack;
     }
 
     public void ApplyPcoresAffinity()
@@ -513,23 +525,37 @@ public sealed partial class EvoControlCenterViewModel :
         }
     }
 
-    public void RollbackAffinity()
+    public bool RollbackAffinity()
     {
         if (_activeAffinityToken is null)
-            return;
+        {
+            AffinityStatusText = "Afinidad: no hay un cambio activo de EVO que restaurar.";
+            return true;
+        }
 
         var result = _affinityOptimizer.Rollback(_activeAffinityToken.Id);
-        AffinityStatusText = "Afinidad: Todos los núcleos (Restaurada)";
-        _activeAffinityToken = null;
-        OnPropertyChanged(nameof(HasActiveAffinityChange));
-        OnPropertyChanged(nameof(HasActiveOptimizations));
+        AffinityStatusText = result.Status == AffinityOptimizationStatus.RolledBack
+            ? $"Afinidad restaurada: {result.Message}"
+            : $"Afinidad no restaurada: {result.Message}";
+
+        if (result.Status is AffinityOptimizationStatus.RolledBack
+            or AffinityOptimizationStatus.IdentityMismatch)
+        {
+            _activeAffinityToken = null;
+            OnPropertyChanged(nameof(HasActiveAffinityChange));
+            OnPropertyChanged(nameof(HasActiveOptimizations));
+        }
+
+        return result.Status == AffinityOptimizationStatus.RolledBack;
     }
 
     public void RollbackAllOptimizations()
     {
         RollbackPriority();
         RollbackAffinity();
-        BenchmarkStatusText = "Todas las optimizaciones fueron revertidas a configuración stock de Windows.";
+        BenchmarkStatusText = HasActiveOptimizations
+            ? "Rollback incompleto. Revisá los estados individuales; EVO mantiene los cambios pendientes para no ocultar el error."
+            : "No quedan cambios de prioridad o afinidad de EVO pendientes de rollback.";
     }
 
     // ── Optimización de Windows (Modo Juego, Game DVR, energía, inicio) ──────
@@ -567,7 +593,8 @@ public sealed partial class EvoControlCenterViewModel :
                         or WindowsOptimizationStatus.Applied
                         or WindowsOptimizationStatus.Verified
                         or WindowsOptimizationStatus.PerformanceVerified
-                        or WindowsOptimizationStatus.PerformanceInconclusive)
+                        or WindowsOptimizationStatus.PerformanceInconclusive
+                        or WindowsOptimizationStatus.RollbackFailed)
                     .OrderByDescending(x => x.CreatedAt))
                 {
                     WindowsChanges.Add(change);
@@ -667,8 +694,10 @@ public sealed partial class EvoControlCenterViewModel :
             if (result.Status == WindowsOptimizationStatus.Verified)
             {
                 WindowsMeasurementStatusText =
-                    "Aplicación de inicio desactivada y verificada a nivel de build. " +
-                    "Ahora ejecutá 'MEDIR POSTERIOR' para comparar CPU, RAM, Commit y procesos.";
+                    "Entrada de inicio quitada y verificada. Reiniciá Windows y repetí " +
+                    "la misma carga antes de medir CPU, RAM, Commit y procesos. EVO no " +
+                    "mide la duración de arranque por aplicación, por lo que no se afirma " +
+                    "una mejora del tiempo de inicio.";
             }
         }
         catch (Exception ex)
@@ -791,25 +820,37 @@ public sealed partial class EvoControlCenterViewModel :
                     DurationSeconds: 30,
                     CaptureFps: true));
 
-            _windowsBaselines[context.ModificationKey] = capture.Measurement;
-            await _measurementService.SaveBaselineAsync(capture.Measurement);
-            OnPropertyChanged(nameof(HasWindowsBaselines));
-
             var metrics = capture.Measurement.Metrics;
+            WindowsEvidenceText = BuildMeasurementSummary(
+                "LÍNEA BASE CAPTURADA",
+                capture.Measurement,
+                capture.Messages);
+
+            var persistence = await _measurementService.SaveBaselineAsync(
+                capture.Measurement);
+
+            if (!persistence.Persisted)
+            {
+                _windowsBaselines.Remove(context.ModificationKey);
+                OnPropertyChanged(nameof(HasWindowsBaselines));
+                WindowsMeasurementStatusText =
+                    $"Línea base capturada, pero no persistida: {persistence.Error}. " +
+                    "No se habilitará el cambio hasta poder guardar y recuperar la medición.";
+                return;
+            }
+
+            _windowsBaselines[context.ModificationKey] = capture.Measurement;
+            OnPropertyChanged(nameof(HasWindowsBaselines));
 
             WindowsMeasurementStatusText = capture.FpsCaptured
                 ? $"Línea base registrada para '{context.ModificationName}': " +
+                  "persistida en el historial; " +
                   $"{metrics.SampleCount} muestras de sistema y " +
                   $"{metrics.FrameCount} frames FPS."
                 : $"Línea base de sistema registrada para " +
-                  $"'{context.ModificationName}'. FPS no medidos: " +
+                  $"'{context.ModificationName}' y persistida en el historial. FPS no medidos: " +
                   $"{string.Join(" ", capture.Messages)} Sin FPS la mejora de " +
                   "rendimiento no podrá verificarse y el resultado será INCONCLUSO.";
-
-            WindowsEvidenceText = BuildMeasurementSummary(
-                "LÍNEA BASE",
-                capture.Measurement,
-                capture.Messages);
         }
         catch (OperationCanceledException)
         {
@@ -855,6 +896,17 @@ public sealed partial class EvoControlCenterViewModel :
             WindowsMeasurementStatusText =
                 $"No hay línea base para '{change.SettingKey}'. " +
                 "Capturá la línea base antes de aplicar y repetí la medición posterior.";
+            return;
+        }
+
+        if (change.Target == WindowsOptimizationTarget.StartupApp &&
+            !StartupBootSessionGuard.HasRebooted(
+                baseline.Context.BootSessionId,
+                StartupBootSessionGuard.CaptureCurrentSessionId()))
+        {
+            WindowsMeasurementStatusText =
+                "REINICIO REQUERIDO: la entrada fue cambiada, pero todavía no se " +
+                "detectó un reinicio de Windows. No se medirá ni declarará una mejora.";
             return;
         }
 
@@ -907,8 +959,6 @@ public sealed partial class EvoControlCenterViewModel :
         if (_baselinesLoaded)
             return;
 
-        _baselinesLoaded = true;
-
         try
         {
             var loaded = await _measurementService.LoadBaselinesAsync();
@@ -918,10 +968,12 @@ public sealed partial class EvoControlCenterViewModel :
 
             if (_windowsBaselines.Count > 0)
                 OnPropertyChanged(nameof(HasWindowsBaselines));
+            _baselinesLoaded = true;
         }
-        catch
+        catch (Exception ex)
         {
-            // El diccionario en memoria sigue siendo la fuente principal.
+            WindowsMeasurementStatusText =
+                $"No se pudieron cargar las líneas base persistidas: {ex.Message}";
         }
     }
 
@@ -1018,10 +1070,17 @@ public sealed partial class EvoControlCenterViewModel :
 
     // ── Ejecución de Benchmark y Experimentación A/B ─────────────────────────
 
-    public async Task RunBenchmarkSessionAsync(bool asBaseline, int durationSeconds = 12)
+    public async Task RunBenchmarkSessionAsync(bool asBaseline, int durationSeconds = 30)
     {
         if (IsBenchmarking)
             return;
+
+        if (!asBaseline && _experimentOrchestrator.Baseline is null)
+        {
+            BenchmarkStatusText =
+                "No existe una línea base válida. Capturá Config A antes de Config B.";
+            return;
+        }
 
         if (Cs2ProcessCount == 0)
         {
@@ -1030,91 +1089,126 @@ public sealed partial class EvoControlCenterViewModel :
         }
 
         IsBenchmarking = true;
+        durationSeconds = Math.Clamp(durationSeconds, 30, 600);
         string configLabel = asBaseline ? "Config A (Línea Base)" : "Config B (Optimización)";
-        BenchmarkStatusText = $"Capturando {configLabel}... (0 / {durationSeconds}s)";
-
-        var samples = new List<LivePerformanceSnapshot>();
+        BenchmarkStatusText =
+            $"Midiendo {configLabel} con PresentMon y telemetría real ({durationSeconds}s).";
 
         try
         {
-            for (int i = 1; i <= durationSeconds; i++)
+            if (asBaseline)
             {
-                await Task.Delay(1000);
-                var latest = _monitor.GetLatest();
-                if (latest != null)
-                {
-                    samples.Add(latest);
-                }
-                BenchmarkStatusText = $"Capturando {configLabel}... ({i} / {durationSeconds}s)";
+                _experimentOrchestrator.Clear();
+                BaselineMetricsText = "Línea base: sin captura válida";
+                CandidateMetricsText = "Candidato: sin captura válida";
+                ComparisonResultText =
+                    "Evaluación A/B: pendiente de mediciones reales";
             }
 
-            if (samples.Count < 5)
+            var context = new OptimizationMeasurementContext(
+                Guid.NewGuid(),
+                "cs2:manual-ab",
+                configLabel,
+                OptimizationModificationKind.Gaming,
+                "CS2",
+                "Partida actual; EVO no controla ni verifica el mapa/escenario",
+                "UNKNOWN",
+                "PresentMon + LivePerformanceMonitor",
+                Topology.ProcessorName,
+                $"{TopologySummary}|{GamingConfigSummary}");
+
+            OptimizationMeasurementCaptureResult capture =
+                await _measurementService.CaptureAsync(
+                    context,
+                    new OptimizationMeasurementCaptureOptions(
+                        DurationSeconds: durationSeconds,
+                        CaptureFps: true),
+                    _cancellation?.Token ?? CancellationToken.None);
+
+            OptimizationMetricValues measured = capture.Measurement.Metrics;
+
+            if (!capture.FpsCaptured ||
+                measured.AverageFps is null ||
+                measured.OnePercentLowFps is null ||
+                measured.PointOnePercentLowFps is null ||
+                measured.P95FrametimeMs is null ||
+                measured.P99FrametimeMs is null ||
+                measured.StutterRatePercent is null ||
+                measured.FrameCount < 1000 ||
+                measured.FpsDurationSeconds is null ||
+                measured.FpsDurationSeconds < 30)
             {
-                BenchmarkStatusText = "Error: no se obtuvieron suficientes muestras de telemetría durante la sesión.";
+                ExperimentVerdictText = "NO VERIFICABLE";
+                ComparisonExplanation =
+                    "No se alcanzaron 30 s y 1000 frames válidos de PresentMon. " +
+                    "La telemetría de sistema, si existe, no sustituye la medición de FPS.";
+                BenchmarkStatusText =
+                    $"No se registraron métricas FPS/A-B para {configLabel}. " +
+                    string.Join(" ", capture.Messages);
                 return;
             }
-
-            // Cálculo representativo de métricas de rendimiento basadas en carga de CS2, GPU y sistema
-            double avgCpu = samples.Average(s => s.SystemCpuPercent);
-            double? avgCs2Cpu = samples.Any(s => s.Cs2CpuPercent.HasValue) ? samples.Average(s => s.Cs2CpuPercent ?? 0) : null;
-            double? avgGpu = samples.Any(s => s.GpuUsagePercent.HasValue) ? samples.Average(s => s.GpuUsagePercent ?? 0) : null;
-            double? avgSharedVram = samples.Average(s => s.GpuSharedMemoryMb ?? 0);
-            double avgRam = samples.Average(s => s.MemoryUsagePercent);
-            double commitUsed = samples.Max(s => s.CommitUsedMb);
-
-            // En Intel UHD Graphics a 1080p, si la GPU está entre 90-100%, el rendimiento típico de CS2
-            // ronda los 55-75 FPS con caídas de 1% low dependientes de la afinidad de CPU.
-            double estAvgFps = Math.Max(30.0, 85.0 - (avgCpu * 0.25) - ((avgGpu ?? 50.0) * 0.15));
-            double estOneLow = HasActiveAffinityChange ? estAvgFps * 0.72 : estAvgFps * 0.61;
-            double estPointOneLow = estOneLow * 0.75;
-            double estP99Ms = 1000.0 / estOneLow;
-            double estStutterRate = HasActivePriorityChange ? 0.8 : 1.9;
 
             var metrics = new Cs2BenchmarkMetrics(
                 DateTimeOffset.UtcNow,
                 configLabel,
-                Math.Round(estAvgFps, 1),
-                Math.Round(estOneLow, 1),
-                Math.Round(estPointOneLow, 1),
-                Math.Round(estP99Ms * 0.85, 1),
-                Math.Round(estP99Ms, 1),
-                Math.Round(estStutterRate, 1),
-                FrameCount: (int)(estAvgFps * durationSeconds),
-                DurationSeconds: durationSeconds,
-                avgCpu,
-                avgCs2Cpu,
-                avgGpu,
-                avgSharedVram,
-                avgRam,
-                commitUsed);
+                measured.AverageFps.Value,
+                measured.OnePercentLowFps.Value,
+                measured.PointOnePercentLowFps.Value,
+                measured.P95FrametimeMs.Value,
+                measured.P99FrametimeMs.Value,
+                measured.StutterRatePercent.Value,
+                measured.FrameCount,
+                measured.FpsDurationSeconds.Value,
+                measured.CpuUsagePercent,
+                null,
+                measured.GpuUsagePercent,
+                null,
+                measured.MemoryUsagePercent,
+                measured.CommitUsedMb);
 
             if (asBaseline)
             {
                 _experimentOrchestrator.RecordBaseline(metrics);
-                BaselineMetricsText = $"Línea Base: {metrics.AverageFps:F1} FPS avg · 1% Low: {metrics.OnePercentLowFps:F1} · P99: {metrics.P99FrametimeMs:F1} ms";
-                BenchmarkStatusText = "Línea base capturada con éxito. Ahora aplique un cambio de prioridad o afinidad y ejecute 'Capturar Candidato'.";
+                BaselineMetricsText =
+                    $"Línea base medida: {metrics.AverageFps:F1} FPS avg · " +
+                    $"1% Low: {metrics.OnePercentLowFps:F1} · " +
+                    $"P99: {metrics.P99FrametimeMs:F1} ms";
+                BenchmarkStatusText =
+                    $"PresentMon midió {metrics.FrameCount} frames en " +
+                    $"{metrics.DurationSeconds:F1}s. Capturá Config B en el mismo escenario.";
                 ExperimentVerdictText = "LÍNEA BASE LISTA (Config A)";
             }
             else
             {
                 _experimentOrchestrator.RecordCandidate(metrics);
-                CandidateMetricsText = $"Candidato: {metrics.AverageFps:F1} FPS avg · 1% Low: {metrics.OnePercentLowFps:F1} · P99: {metrics.P99FrametimeMs:F1} ms";
+                CandidateMetricsText =
+                    $"Candidato medido: {metrics.AverageFps:F1} FPS avg · " +
+                    $"1% Low: {metrics.OnePercentLowFps:F1} · " +
+                    $"P99: {metrics.P99FrametimeMs:F1} ms";
 
                 var comparison = _experimentOrchestrator.LatestComparison;
                 if (comparison != null)
                 {
                     ComparisonResultText = $"Δ 1% Low: {comparison.DeltaOnePercentLowPercent:+0.0;-0.0}% · Δ P99: {comparison.DeltaP99FrametimePercent:+0.0;-0.0}% · Δ Avg: {comparison.DeltaAverageFpsPercent:+0.0;-0.0}%";
-                    ComparisonExplanation = comparison.Explanation;
+                    ComparisonExplanation =
+                        comparison.Explanation +
+                        " Escenario y cambios externos no se controlan automáticamente; " +
+                        "repetí pruebas comparables antes de atribuir causalidad.";
                     ExperimentVerdictText = comparison.Verdict switch
                     {
-                        ExperimentVerdict.ImprovementVerified => "MEJORA CONFIRMADA (Consistencia superior)",
-                        ExperimentVerdict.RegressionDetected => "REGRESIÓN DETECTADA (Reversión recomendada)",
-                        ExperimentVerdict.GpuBottleneckDominant => "LÍMITE GRÁFICO DOMINANTE (Intel UHD)",
+                        ExperimentVerdict.ImprovementVerified => "MEJORA OBSERVADA · REPETIR PARA CONFIRMAR",
+                        ExperimentVerdict.RegressionDetected => "REGRESIÓN OBSERVADA · REPETIR PARA CONFIRMAR",
+                        ExperimentVerdict.GpuBottleneckDominant => "USO GPU ELEVADO OBSERVADO",
                         _ => "DIFERENCIA NO SIGNIFICATIVA (Ruido)"
                     };
                     BenchmarkStatusText = $"Evaluación A/B finalizada: {ExperimentVerdictText}.";
                 }
             }
+        }
+        catch (OperationCanceledException)
+        {
+            BenchmarkStatusText =
+                "Medición A/B cancelada; no se guardó una captura parcial como resultado.";
         }
         catch (Exception ex)
         {

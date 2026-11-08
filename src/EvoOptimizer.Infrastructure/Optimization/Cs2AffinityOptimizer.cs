@@ -46,8 +46,22 @@ public sealed class Cs2AffinityOptimizer
     private readonly ConcurrentDictionary<Guid, AffinityOptimizationToken>
         _activeChanges = new();
 
-    public AffinityOptimizationResult Apply(CpuTopologyInfo topology, GamingAffinityMode mode)
+    /// <summary>
+    /// Aplica la afinidad al proceso indicado. Sin nombre usa CS2 (comportamiento
+    /// histórico). El motor de tokens/rollback es el mismo para cualquier juego.
+    /// </summary>
+    public AffinityOptimizationResult Apply(
+        CpuTopologyInfo topology,
+        GamingAffinityMode mode,
+        string? processName = null)
     {
+        string target = string.IsNullOrWhiteSpace(processName)
+            ? TargetProcessName
+            : processName.Trim();
+        string display = target.Equals(TargetProcessName, StringComparison.OrdinalIgnoreCase)
+            ? "CS2"
+            : target;
+
         if (topology is null || !topology.IsTopologyReliable)
         {
             return new(
@@ -62,7 +76,7 @@ public sealed class Cs2AffinityOptimizer
                 "La topología no reporta núcleos de rendimiento (P-Cores). Se canceló la optimización.");
         }
 
-        Process[] processes = Process.GetProcessesByName(TargetProcessName);
+        Process[] processes = Process.GetProcessesByName(target);
 
         try
         {
@@ -70,14 +84,14 @@ public sealed class Cs2AffinityOptimizer
             {
                 return new(
                     AffinityOptimizationStatus.ProcessNotFound,
-                    "CS2 no está ejecutándose.");
+                    $"{display} no está ejecutándose.");
             }
 
             if (processes.Length != 1)
             {
                 return new(
                     AffinityOptimizationStatus.AmbiguousProcess,
-                    "Se detectaron varias instancias de CS2. No se modificó ninguna.");
+                    $"Se detectaron varias instancias de {display}. No se modificó ninguna.");
             }
 
             using Process process = processes[0];
@@ -86,7 +100,7 @@ public sealed class Cs2AffinityOptimizer
             {
                 return new(
                     AffinityOptimizationStatus.ProcessNotFound,
-                    "CS2 terminó antes de aplicar la afinidad.");
+                    $"{display} terminó antes de aplicar la afinidad.");
             }
 
             long startTicks = process.StartTime.ToUniversalTime().Ticks;
@@ -105,7 +119,7 @@ public sealed class Cs2AffinityOptimizer
             {
                 return new(
                     AffinityOptimizationStatus.PermissionDenied,
-                    "Windows no permitió consultar la afinidad del proceso CS2.");
+                    "Windows no permitió consultar la afinidad del proceso objetivo.");
             }
 
             ulong originalMask = currentAffinity.ToUInt64();
@@ -114,7 +128,7 @@ public sealed class Cs2AffinityOptimizer
             {
                 return new(
                     AffinityOptimizationStatus.AlreadyApplied,
-                    $"CS2 ya utiliza la máscara 0x{targetMask:X}. No se realizó ningún cambio.");
+                    $"{display} ya utiliza la máscara 0x{targetMask:X}. No se realizó ningún cambio.");
             }
 
             if (!NativeMethods.SetProcessAffinityMask(handle, new UIntPtr(targetMask)))
@@ -186,19 +200,23 @@ public sealed class Cs2AffinityOptimizer
             {
                 return new(
                     AffinityOptimizationStatus.IdentityMismatch,
-                    "La identidad del proceso CS2 cambió. Se rechazó el rollback de afinidad.");
+                    "La identidad del proceso cambió. Se rechazó el rollback de afinidad.");
             }
 
             IntPtr handle = process.Handle;
 
-            if (NativeMethods.GetProcessAffinityMask(handle, out var currentAffinity, out _))
+            if (!NativeMethods.GetProcessAffinityMask(handle, out var currentAffinity, out _))
             {
-                if (currentAffinity.ToUInt64() != token.AppliedAffinityMask)
-                {
-                    return new(
-                        AffinityOptimizationStatus.ExternalChangeDetected,
-                        "La afinidad fue modificada externamente. No se sobrescribió.");
-                }
+                return new(
+                    AffinityOptimizationStatus.PermissionDenied,
+                    "Windows no permitió verificar la afinidad actual. Se rechazó el rollback para no sobrescribir un cambio externo.");
+            }
+
+            if (currentAffinity.ToUInt64() != token.AppliedAffinityMask)
+            {
+                return new(
+                    AffinityOptimizationStatus.ExternalChangeDetected,
+                    "La afinidad fue modificada externamente. No se sobrescribió.");
             }
 
             if (!NativeMethods.SetProcessAffinityMask(handle, new UIntPtr(token.OriginalAffinityMask)))
@@ -219,7 +237,7 @@ public sealed class Cs2AffinityOptimizer
         {
             return new(
                 AffinityOptimizationStatus.IdentityMismatch,
-                "El proceso CS2 ya no existe.");
+                "El proceso optimizado ya no existe.");
         }
         catch (System.ComponentModel.Win32Exception ex)
         {

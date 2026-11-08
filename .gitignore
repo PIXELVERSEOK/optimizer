@@ -16,3 +16,10 @@
 # Build outputs
 artifacts/
 TestResults/
+
+# Build outputs
+DIST/*.exe
+DIST/*.dll
+bin/
+obj/
+.vs/

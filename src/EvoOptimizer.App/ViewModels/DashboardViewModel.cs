@@ -33,12 +33,17 @@ public sealed class DashboardViewModel : ObservableObject, IDisposable
     private string _memoryText = "N/D";
     private string _memoryDetail = "No disponible";
     private string _commitDetail = "Commit: no disponible";
+    private double? _cpuUsagePercentValue;
+    private double? _memoryUsagePercentValue;
     private double[] _cpuHistory = Array.Empty<double>();
     private double[] _memoryHistory = Array.Empty<double>();
     private string _cpuStatsText = "Sin muestras";
     private string _memStatsText = "Sin muestras";
     private string _sessionText = "";
     private string _statusText = "Iniciando telemetría…";
+    private string _clockText = DateTime.Now.ToString(
+        "dd MMM yyyy · HH:mm",
+        CultureInfo.CurrentCulture);
 
     public DashboardViewModel(ITelemetryProvider telemetry, HardwareProfile hardware, IDecisionEngine? decisionEngine = null)
     {
@@ -113,6 +118,16 @@ public sealed class DashboardViewModel : ObservableObject, IDisposable
     public string SelectedGoalDescription => _selectedGoal.Description;
     public string CpuText { get => _cpuText; private set => Set(ref _cpuText, value); }
     public string MemoryText { get => _memoryText; private set => Set(ref _memoryText, value); }
+    public double? CpuUsagePercentValue
+    {
+        get => _cpuUsagePercentValue;
+        private set => Set(ref _cpuUsagePercentValue, value);
+    }
+    public double? MemoryUsagePercentValue
+    {
+        get => _memoryUsagePercentValue;
+        private set => Set(ref _memoryUsagePercentValue, value);
+    }
     public string MemoryDetail { get => _memoryDetail; private set => Set(ref _memoryDetail, value); }
     public string CommitDetail { get => _commitDetail; private set => Set(ref _commitDetail, value); }
     public double[] CpuHistory { get => _cpuHistory; private set => Set(ref _cpuHistory, value); }
@@ -121,6 +136,10 @@ public sealed class DashboardViewModel : ObservableObject, IDisposable
     public string MemStatsText { get => _memStatsText; private set => Set(ref _memStatsText, value); }
     public string SessionText { get => _sessionText; private set => Set(ref _sessionText, value); }
     public string StatusText { get => _statusText; private set => Set(ref _statusText, value); }
+    public string ClockText { get => _clockText; private set => Set(ref _clockText, value); }
+
+    public IReadOnlyList<TelemetrySnapshot> CaptureTelemetryHistory()
+        => _window.ToArray();
 
     private void OnTick(object? sender, EventArgs e)
     {
@@ -132,6 +151,7 @@ public sealed class DashboardViewModel : ObservableObject, IDisposable
 
         if (sample.CpuUtilizationPercent is { } cpu)
         {
+            CpuUsagePercentValue = Math.Clamp(cpu, 0, 100);
             Push(_cpuSeries, cpu);
             _cpuStats.Add(cpu);
             CpuText = $"{cpu:F0} %";
@@ -140,11 +160,13 @@ public sealed class DashboardViewModel : ObservableObject, IDisposable
         }
         else
         {
+            CpuUsagePercentValue = null;
             CpuText = "N/D";
         }
 
         if (sample.MemoryLoadPercent is { } memory)
         {
+            MemoryUsagePercentValue = Math.Clamp(memory, 0, 100);
             Push(_memSeries, memory);
             _memStats.Add(memory);
             MemoryText = $"{memory:F0} %";
@@ -153,6 +175,7 @@ public sealed class DashboardViewModel : ObservableObject, IDisposable
         }
         else
         {
+            MemoryUsagePercentValue = null;
             MemoryText = "N/D";
         }
 
@@ -167,6 +190,9 @@ public sealed class DashboardViewModel : ObservableObject, IDisposable
             : "Commit: no disponible";
 
         var elapsed = DateTimeOffset.Now - _sessionStart;
+        ClockText = DateTime.Now.ToString(
+            "dd MMM yyyy · HH:mm",
+            CultureInfo.CurrentCulture);
         SessionText = $"Sesión: {elapsed:hh\\:mm\\:ss} · {_cpuStats.Count} muestras de CPU · {_memStats.Count} de memoria";
         StatusText = $"Telemetría activa · 1 Hz · ventana de {_window.Count} s";
 

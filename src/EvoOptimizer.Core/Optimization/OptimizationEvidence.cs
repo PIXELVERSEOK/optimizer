@@ -22,7 +22,8 @@ public enum OptimizationEvidenceVerdict
     Inconclusive,
     ImprovementVerified,
     TradeOff,
-    RegressionDetected
+    RegressionDetected,
+    NotVerifiable
 }
 
 /// <summary>
@@ -50,7 +51,8 @@ public sealed record OptimizationMetricValues(
     int ErrorCount = 0,
     int FrameCount = 0,
     int SampleCount = 0,
-    double DurationSeconds = 0);
+    double DurationSeconds = 0,
+    double? FpsDurationSeconds = null);
 
 public sealed record OptimizationMeasurementContext(
     Guid ModificationId,
@@ -62,7 +64,39 @@ public sealed record OptimizationMeasurementContext(
     string Resolution,
     string CaptureSource,
     string HardwareId,
-    string EnvironmentId);
+    string EnvironmentId,
+    string? BootSessionId = null);
+
+public static class StartupBootSessionGuard
+{
+    private static readonly TimeSpan MinimumSessionDifference = TimeSpan.FromSeconds(30);
+
+    public static string CaptureCurrentSessionId()
+    {
+        DateTimeOffset estimatedBootTime = DateTimeOffset.UtcNow -
+            TimeSpan.FromMilliseconds(Environment.TickCount64);
+        return estimatedBootTime.ToString("O", System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    public static bool HasRebooted(string? baselineSessionId, string? candidateSessionId)
+    {
+        if (!DateTimeOffset.TryParse(
+                baselineSessionId,
+                System.Globalization.CultureInfo.InvariantCulture,
+                System.Globalization.DateTimeStyles.RoundtripKind,
+                out DateTimeOffset baseline) ||
+            !DateTimeOffset.TryParse(
+                candidateSessionId,
+                System.Globalization.CultureInfo.InvariantCulture,
+                System.Globalization.DateTimeStyles.RoundtripKind,
+                out DateTimeOffset candidate))
+        {
+            return false;
+        }
+
+        return (candidate - baseline).Duration() >= MinimumSessionDifference;
+    }
+}
 
 public sealed record OptimizationMeasurement(
     Guid Id,
@@ -103,6 +137,7 @@ public sealed record OptimizationEvidenceResult(
         OptimizationEvidenceVerdict.ImprovementVerified => "MEJORA VERIFICADA",
         OptimizationEvidenceVerdict.RegressionDetected => "REGRESIÓN DETECTADA",
         OptimizationEvidenceVerdict.TradeOff => "INTERCAMBIO (BENEFICIO CON PERJUICIO)",
+        OptimizationEvidenceVerdict.NotVerifiable => "NO VERIFICABLE",
         OptimizationEvidenceVerdict.Inconclusive => "INCONCLUSO",
         _ => "DATOS INSUFICIENTES"
     };
@@ -149,9 +184,28 @@ public sealed class OptimizationEvidenceEvaluator
         if (!Comparable(baseline.Context, candidate.Context))
         {
             warnings.Add(
-                "La línea base y la medición posterior no comparten contexto " +
-                "(juego, escenario, resolución, fuente, hardware o entorno). " +
-                "No se puede atribuir el resultado al cambio.");
+                "La línea base y la medición posterior no pertenecen a la misma " +
+                "optimización o no comparten contexto (tipo, juego, escenario, " +
+                "resolución, fuente, hardware o entorno). No se puede atribuir " +
+                "el resultado al cambio.");
+
+            return BuildResult(
+                baseline,
+                candidate,
+                OptimizationEvidenceVerdict.InsufficientData,
+                shouldKeep: false,
+                shouldRollback: false,
+                requiresUserDecision: true,
+                metrics,
+                evidence,
+                warnings);
+        }
+
+        if (candidate.CapturedAt <= baseline.CapturedAt)
+        {
+            warnings.Add(
+                "La medición posterior no fue capturada después de la línea base. " +
+                "No se puede establecer una comparación antes/después.");
 
             return BuildResult(
                 baseline,
@@ -650,6 +704,9 @@ public sealed class OptimizationEvidenceEvaluator
     private static bool Comparable(
         OptimizationMeasurementContext baseline,
         OptimizationMeasurementContext candidate) =>
+        baseline.ModificationId == candidate.ModificationId &&
+        baseline.Kind == candidate.Kind &&
+        Same(baseline.ModificationKey, candidate.ModificationKey) &&
         Same(baseline.GameId, candidate.GameId) &&
         Same(baseline.Scenario, candidate.Scenario) &&
         Same(baseline.Resolution, candidate.Resolution) &&

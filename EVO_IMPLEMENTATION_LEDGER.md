@@ -1,7 +1,186 @@
 # EVO_IMPLEMENTATION_LEDGER.md
-> Inventario acumulado de implementaciones. Última actualización: 2026-11-07T05:50:00-03:00
+> Inventario acumulado de implementaciones. Última actualización: 2026-11-08T01:11:04-03:00
 
 ---
+
+## TANDA 24 — Cierre del diagnóstico ASUS ExpertCenter (GPU/driver, topología P/E, energía AC)
+
+> Continuación de T4-001/T19/T20: completa los datos del brief que aún no llegaban
+> al diagnóstico continuo (GPU + driver, topología P/E), conecta la medición de
+> energía al Windows Optimization Engine y corrige un fallo real de PowerShell 5.1
+> que ocultaba GPU, disco y RAM cuando CIM devolvía un único elemento. Sin módulos
+> duplicados: se extendieron los motores existentes. Diagnóstico de solo lectura.
+
+### T24-001 · GPU + driver y topología P/E en el diagnóstico continuo
+| Campo | Valor |
+| :--- | :--- |
+| **Estado** | `FUNCTIONALLY_VERIFIED` (pipeline de solo lectura en equipo real) + `BUILD_VERIFIED` (filas de UI); `TEST_VERIFIED` |
+| **Archivos** | `src/EvoOptimizer.Core/Diagnosis/HardwareEvidenceEvaluator.cs`, `src/EvoOptimizer.Core/Diagnosis/AdaptiveDiagnosticEngine.cs`, `src/EvoOptimizer.Core/Optimization/EvoAiCoordinator.cs`, `src/EvoOptimizer.App/ViewModels/EvoControlCenterViewModel.Hub.cs`, `tests/EvoOptimizer.Core.Tests/OptimizationExpansionTests.cs` |
+| **Alcance** | Surfacing de GPU/driver y topología P/E con origen, confiabilidad y fecha; conexión a EVO AI |
+
+**Implementación:**
+- `HardwareEvidenceEvaluator` añade `GraphicsDeviceEvidence` y `AssessGraphics`, que leen los hechos `GPU` ya capturados por `WindowsSystemAuditor` (Name, AdapterCompatibility, DriverVersion, DriverDate, VideoProcessor, PNPDeviceID, Status, resolución/refresh). `AdapterRAM` no se expone como VRAM dedicada. Driver ausente queda `null` → `UNKNOWN`; no se inventa versión ni fecha ni se declara el driver "antiguo" sin fuente de referencia.
+- `HardwareDiagnosticSnapshot` incorpora `Graphics`; `AdaptiveDiagnosticEngine` agrega la evidencia de driver al hallazgo `GPU_PROFILE` y emite `GPU_DRIVER_UNKNOWN_<n>` cuando no hay versión ni fecha.
+- EVO AI (`EvoAiCoordinator`) suma la decisión "GPU y driver" con confianza `Medium`/`UNKNOWN` y advierte `GPU UNKNOWN` sin datos; nunca recomienda actualizar el driver sin evidencia.
+- Control Center: `FillHardwareRows` agrega filas GPU (identidad, driver, modo actual) y la fila "Topología P/E" medida en cada ciclo con el proveedor existente `IntelHybridTopologyProvider` (`GetLogicalProcessorInformationEx`, solo lectura). La topología se remide con fecha propia; no se infiere de los núcleos CIM ni se altera la `Topology` usada por afinidad.
+
+**Corrección PowerShell 5.1 (bug real):** al cruzar el retorno de la función `Get-Many`, PS 5.1 serializa un array de un solo elemento como **objeto JSON** (hechos sin prefijo `[n]`). `Indices()`/`Indexed()` sólo leían `[n]`, por lo que una única GPU, un único disco o un único módulo de RAM se perdían. Ahora `Indices` trata los hechos planos como índice 0 e `Indexed` respalda la lectura sin prefijo. Verificado en equipo real: antes `GPU: 0` y sin disco; después `Intel UHD Graphics · driver 32.0.101.6913` y `KINGSTON SA400S37480G`.
+
+**Validación:** build Release 0 errores/0 advertencias; 163 pruebas Core pasan. Prueba de integración de solo lectura ejecutada en Windows 11 Pro / PowerShell 5.1.26100: CPU i3-1220P (10/12), memoria "CANAL ÚNICO VERIFICADO" con 2 módulos (los localizadores reales no confirman Dual Channel), GPU Intel UHD + driver, disco Kingston SATA rotulado "SOLO HealthStatus (NO equivale a SMART completo)" porque `Get-PhysicalDisk`/contadores requieren elevación, TRIM activo, plan "CS2 - Alto rendimiento", 10 procesos con CPU instantánea por delta y potencia en watts `null`. Las nuevas filas de la tabla no se recorrieron visualmente en la app este turno (sólo compilan). No se modificó ninguna configuración.
+
+### T24-002 · Energía AC y plan Alto rendimiento conectados al Windows Optimization Engine
+| Campo | Valor |
+| :--- | :--- |
+| **Estado** | `TEST_VERIFIED` + `BUILD_VERIFIED`; aplicar/revertir real no ejecutado |
+| **Archivos** | `src/EvoOptimizer.Infrastructure/Optimization/WindowsOptimizationService.cs`, `tests/EvoOptimizer.Core.Tests/UnitTest1.cs` |
+| **Alcance** | Que el planificador endurecido (AC + plan Alto rendimiento) reciba datos reales y no quede bloqueado para siempre |
+
+**Implementación:**
+- `CaptureSnapshotAsync` ahora propaga `IsOnAcPower` e `HasHighPerformancePlan` que `WindowsGamingConfigService.ReadConfiguration()` ya medía (vía `GetSystemPowerStatus` y `powercfg`), pero se descartaban. Sin esto, el ítem PowerPlan quedaba `CanApply=false` permanente en la app real.
+- Defensa en profundidad: `ApplyAsync(PowerPlan)` relee la fuente de alimentación en el momento de aplicar y aborta con `Unavailable` si no es AC verificada (batería o estado desconocido), aunque el planificador ya lo exige. No se cambia el plan con batería.
+- Pruebas del planificador actualizadas: `MakeSnapshot` expone `acPower`/`hasHighPerformancePlan`; el caso feliz los declara explícitos y se agregan tres pruebas de bloqueo (batería, AC desconocido, sin plan Alto rendimiento). Se corrigió la advertencia xUnit2012 preexistente (`Assert.True(...Any)` → `Assert.Contains`).
+
+**Validación:** build Release 0/0; 163 pruebas pasan. La lógica de bloqueo está cubierta por pruebas deterministas. No se aplicó ni revirtió ningún plan de energía real durante esta tanda; la lectura de AC reutiliza el servicio existente y es de solo lectura.
+
+**Límites / pendiente:**
+- SMART completo (contadores de confiabilidad) sigue requiriendo elevación; sin ella el disco figura como `HealthStatusOnly` y los contadores `UNKNOWN`, tal como exige el brief.
+- Las filas GPU/topología del Control Center compilan pero no se verificaron visualmente en ejecución este turno.
+- No se declaró `FUNCTIONALLY_VERIFIED` ningún cambio de Windows (plan de energía, prioridad, afinidad): sólo el diagnóstico de solo lectura se ejecutó en hardware real.
+
+---
+
+## TANDA 23 — Diagnóstico de red integrado
+
+### T23-001 · Adaptadores, gateway, ICMP y DNS en modo solo lectura
+| Campo | Valor |
+| :--- | :--- |
+| **Estado** | `BUILD_VERIFIED` + `TEST_VERIFIED`; captura en equipo real pendiente |
+| **Archivos** | `src/EvoOptimizer.Infrastructure/Analysis/NetworkDiagnosisService.cs`, `src/EvoOptimizer.App/Navigation/EvoNavigationCatalog.cs`, `src/EvoOptimizer.App/Views/NetworkDiagnosisPanel.xaml(.cs)`, `src/EvoOptimizer.App/Views/EvoDashboardShell.xaml(.cs)`, `tests/EvoOptimizer.Core.Tests/OptimizationExpansionTests.cs` |
+| **Alcance** | Sustituir el marcador pendiente de RED por diagnóstico real que el usuario ejecuta desde la navegación |
+
+**Implementación:**
+- El panel lista estado, tipo, velocidad reportada, IPv4, gateway y DNS configurados en adaptadores no-loopback.
+- Ejecuta tres sondas ICMP de un segundo al gateway seleccionado y a `1.1.1.1`, y cronometra la resolución DNS de `example.com`. El resumen calcula pérdida y RTT solo con respuestas reales.
+- Expone errores y advierte que ICMP filtrado no demuestra por sí solo pérdida de Internet; cuando hay múltiples gateways informa qué adaptador se probó.
+- No modifica TCP/IP, DNS, rutas ni configuración de adaptadores; el área queda marcada como parcial.
+
+**Validación:** build Release y pruebas Core completas pasan; dos pruebas deterministas cubren pérdida y RTT con/no respuestas. No se ejecutó el probe de red en el equipo durante el build.
+
+## TANDA 22 — Recuperación veraz de afinidad y prioridad CS2
+
+### T22-001 · Rollback confirmado antes de reportar restauración
+| Campo | Valor |
+| :--- | :--- |
+| **Estado** | `BUILD_VERIFIED`; no se modificaron procesos reales durante la validación |
+| **Archivos** | `src/EvoOptimizer.App/ViewModels/EvoControlCenterViewModel.cs`, `src/EvoOptimizer.App/ViewModels/EvoControlCenterViewModel.Hub.cs`, `src/EvoOptimizer.Infrastructure/Optimization/Cs2AffinityOptimizer.cs` |
+| **Alcance** | Evitar reportes de éxito falsos y rechazar la restauración de afinidad si no se puede leer el estado actual |
+
+**Implementación:**
+- El ViewModel sólo retira el token de cambio si se restauró o si la identidad del proceso ya no corresponde; errores y cambios externos quedan visibles y pendientes.
+- El rollback de afinidad ahora aborta si Windows no permite verificar la máscara actual; no aplica la máscara original a ciegas.
+- El perfil automático informa los estados individuales y no asegura que los cambios se hayan revertido cuando hubo un error.
+
+**Validación:** build Release y pruebas Core completas pasan. No se alteró prioridad ni afinidad de CS2 durante la validación.
+
+## TANDA 21 — Benchmark CS2 basado en PresentMon
+
+### T21-001 · Sustitución de FPS estimados por frames capturados
+| Campo | Valor |
+| :--- | :--- |
+| **Estado** | `BUILD_VERIFIED` + `TEST_VERIFIED`; ejecución funcional requiere CS2 y PresentMon disponibles |
+| **Archivos** | `src/EvoOptimizer.Core/Optimization/OptimizationEvidence.cs`, `src/EvoOptimizer.Infrastructure/Measurement/OptimizationMeasurementService.cs`, `src/EvoOptimizer.Infrastructure/Benchmark/Cs2ExperimentOrchestrator.cs`, `src/EvoOptimizer.App/ViewModels/EvoControlCenterViewModel.cs`, `src/EvoOptimizer.App/Views/EvoLiveMonitorPanel.xaml`, `tests/EvoOptimizer.Core.Tests/UnitTest1.cs` |
+| **Alcance** | Eliminar valores inferidos de FPS y conectar la sesión A/B a la captura existente de PresentMon |
+
+**Implementación:**
+- El benchmark usa la captura y el analizador existentes. FPS, percentiles, frametimes y frames sólo se registran si PresentMon entregó al menos 30 s y 1000 frames válidos.
+- Si no hay evidencia suficiente, no se guarda una línea base/candidato ni se compara; la UI informa `NO VERIFICABLE`. La telemetría general no sustituye FPS.
+- La resolución no capturada se guarda como `UNKNOWN`; uso alto de GPU se describe como observación, no se atribuye a Intel UHD. Una diferencia de una pareja A/B se presenta como observada y requiere repetición, no como prueba causal.
+- Se expone por separado la duración de frames FPS frente a la duración agregada de telemetría para validar el umbral correcto.
+
+**Validación:** build Release y pruebas Core completas pasan; las pruebas del comparador A/B pasan. No se ejecutó una captura real de CS2/PresentMon en este turno.
+
+## TANDA 20 — Inventario de servicios Windows
+
+### T20-001 · Evidencia detallada de estado y configuración
+| Campo | Valor |
+| :--- | :--- |
+| **Estado** | `BUILD_VERIFIED` + `TEST_VERIFIED`; diagnóstico de solo lectura |
+| **Archivos** | `src/EvoOptimizer.Core/Diagnosis/HardwareEvidenceEvaluator.cs`, `src/EvoOptimizer.Core/Diagnosis/AdaptiveDiagnosticEngine.cs`, `src/EvoOptimizer.App/ViewModels/EvoControlCenterViewModel.Hub.cs`, `tests/EvoOptimizer.Core.Tests/OptimizationExpansionTests.cs` |
+| **Alcance** | Integrar el inventario real de `Win32_Service` al diagnóstico existente |
+
+**Implementación:**
+- El evaluador conserva para cada servicio su nombre, nombre visible, estado, modo de inicio y PID informado por CIM.
+- El diagnóstico y la tabla existente muestran el inventario, sin inferir que un servicio sea innecesario por estar detenido o configurado como automático.
+- No se cambia configuración de servicios: todavía falta un catálogo con reglas de compatibilidad verificadas y mecanismo de recuperación específico.
+
+**Validación:** build Release y 144 pruebas Core pasan; se añadió cobertura para estados, inicio y PID del inventario. No se modificaron servicios del equipo.
+
+## TANDA 19 — Diagnóstico de presión de memoria
+
+### T19-001 · Clasificación conectada a telemetría real
+| Campo | Valor |
+| :--- | :--- |
+| **Estado** | `BUILD_VERIFIED` + `TEST_VERIFIED`; solo lectura, sin cerrar procesos ni liberar cachés |
+| **Archivos** | `src/EvoOptimizer.App/ViewModels/EvoControlCenterViewModel.Hub.cs`, `src/EvoOptimizer.App/Views/EvoOptimizationHubPanel.xaml`, `tests/EvoOptimizer.Core.Tests/OptimizationExpansionTests.cs` |
+| **Alcance** | Integrar el evaluador existente al monitor y al contexto de recomendaciones |
+
+**Implementación:**
+- El monitor presenta clasificación basada en RAM disponible/total y commit medidos. Los hard faults figuran como no medidos, no se inventan.
+- El contexto del catálogo deja de usar un umbral de uso de RAM independiente y consulta `MemoryPressureEvaluator`; presión alta/crítica solo se declara con evidencia válida.
+- Muestras ausentes o inválidas quedan como `UNKNOWN`. No se fuerza la liberación de memoria ni se cierran procesos.
+
+**Validación:** build Release y 144 pruebas Core pasan; pruebas cubren clasificación, evidencia insuficiente e inventario de servicios. La UI muestra telemetría, pero no se ha validado visualmente en ejecución.
+
+## TANDA 18 — Seguridad de operaciones de proceso
+
+### T18-001 · Prioridad con identidad de proceso e historial obligatorio
+| Campo | Valor |
+| :--- | :--- |
+| **Estado** | `BUILD_VERIFIED` + `TEST_VERIFIED`; no se aplicó ningún cambio de prioridad real |
+| **Archivos** | `src/EvoOptimizer.Infrastructure/Optimization/ProcessGovernanceService.cs`, `src/EvoOptimizer.App/Views/EvoOptimizationHubPanel.xaml(.cs)`, `tests/EvoOptimizer.Core.Tests/OptimizationExpansionTests.cs` |
+| **Alcance** | Endurecer el gobierno de procesos existente sin terminar procesos ni subir prioridades |
+
+**Implementación:**
+- Los procesos no clasificados ya no se tratan como aplicaciones de fondo elegibles: quedan protegidos junto a los críticos.
+- El rollback conserva PID + hora de inicio para rechazar PID reutilizados y no sobrescribe prioridades que cambiaron externamente.
+- El historial EVO es requisito antes de bajar la prioridad. Si falla el registro posterior, EVO intenta restaurar y verificar el estado original; los errores del historial ya no se silencian.
+- Si falla el historial al registrar una restauración, el resultado deja explícito que la prioridad se restauró pero el registro no.
+
+**Validación:** tests Core pasan; build Release de la solución compila. La prueba de ejecución sobre Windows está protegida para ejecutarse solo en Windows; no se cambió la prioridad de procesos durante esta tanda.
+
+## TANDA 17 — Medición veraz de optimización de inicio
+
+### T17-001 · Desconocido por defecto y sin veredicto de mejora no atribuible
+| Campo | Valor |
+| :--- | :--- |
+| **Estado** | `BUILD_VERIFIED` + `TEST_VERIFIED`; no se deshabilitó ninguna aplicación de inicio |
+| **Archivos** | `src/EvoOptimizer.Infrastructure/Analysis/StartupBackgroundAnalyzer.cs`, `src/EvoOptimizer.Infrastructure/Measurement/OptimizationMeasurementService.cs`, `src/EvoOptimizer.Infrastructure/Optimization/WindowsOptimizationService.cs`, `src/EvoOptimizer.Core/Optimization/OptimizationEvidence.cs`, `src/EvoOptimizer.App/ViewModels/EvoControlCenterViewModel.cs`, `src/EvoOptimizer.App/Views/EvoLiveMonitorPanel.xaml.cs`, `tests/EvoOptimizer.Core.Tests/StartupBackgroundAnalyzerTests.cs`, `tests/EvoOptimizer.Core.Tests/UnitTest1.cs` |
+| **Alcance** | Evitar inferir impacto desde el nombre y exigir un reinicio para cualquier captura posterior |
+
+**Implementación:**
+- El impacto de cada entrada de inicio figura como no medido; el nombre del producto ya no asigna arbitrariamente impacto medio.
+- Las capturas de optimización de inicio guardan la sesión de arranque estimada. El Control Center exige detectar otro arranque antes de capturar posterior, y el servicio vuelve a validar el requisito.
+- Tras reiniciar, las métricas generales de 30 s quedan como observación: el servicio registra `NO VERIFICABLE`, sin afirmar una mejora del tiempo de inicio por aplicación mientras EVO no mida esa métrica específica.
+- Las entradas administrables siguen limitadas al valor HKCU `Run`; no se amplió la escritura a carpetas de inicio, RunOnce o HKLM.
+
+**Validación:** pruebas de sesión de arranque y analizador pasan; build Release de la solución compila. No hubo medición de inicio ni cambio real en el registro.
+
+## TANDA 16 — Salvaguardas de limpieza avanzada
+
+### T16-001 · Eliminación por handle y registro anticipado
+| Campo | Valor |
+| :--- | :--- |
+| **Estado** | `BUILD_VERIFIED` + `TEST_VERIFIED`; recorrido de limpieza real pendiente |
+| **Archivos** | `src/EvoOptimizer.Infrastructure/Cleanup/AdvancedSystemCleanupService.cs`, `src/EvoOptimizer.App/ViewModels/AdvancedSystemCleanupViewModel.cs`, `src/EvoOptimizer.App/Views/EvoSystemCleanerPanel.xaml`, `tests/EvoOptimizer.Core.Tests/AdvancedSystemCleanupServiceTests.cs` |
+| **Alcance** | Evitar selecciones no disponibles, validar el archivo abierto y dejar rastro antes de cada eliminación |
+
+**Implementación:**
+- Las categorías no disponibles no aceptan selección.
+- Cada intento elegible escribe una entrada `Pending` antes de la operación; si no se puede escribir el registro, el archivo no se elimina. El resultado final agrega el estado terminal.
+- La eliminación abre el archivo de forma exclusiva y sin seguir su reparse point final, vuelve a validar atributos, fecha y hard links desde el handle, contrasta la ruta física con la raíz autorizada y marca para eliminación mediante ese handle. Rechaza cualquier candidato cuya identidad/ruta física no pueda validarse.
+- El conteo de espacio asignado continúa siendo una medición previa del archivo exclusivo, no una comparación del espacio libre total del volumen.
+
+**Validación:** build Release y pruebas Core pasan; no se ejecutó eliminación real en el equipo. La limpieza aún requiere validación interactiva en Windows.
 
 ## Convención de estados
 
@@ -16,6 +195,176 @@
 
 > [!IMPORTANT]
 > **Nunca marcar como FUNCTIONALLY_VERIFIED algo que solo compila.**
+
+## TANDA 15 — Visor de historial local
+
+### T15-001 · Integración de consulta de operaciones guardadas
+| Campo | Valor |
+| :--- | :--- |
+| **Estado** | `FUNCTIONALLY_VERIFIED` + `BUILD_VERIFIED` + `TEST_VERIFIED` |
+| **Archivos** | `src/EvoOptimizer.App/Navigation/EvoNavigationCatalog.cs`, `src/EvoOptimizer.App/MainWindow.xaml.cs`, `src/EvoOptimizer.App/ViewModels/HistoryDashboardViewModel.cs`, `src/EvoOptimizer.App/Views/EvoDashboardShell.xaml(.cs)`, nuevos `src/EvoOptimizer.App/Views/EvoHistoryPanel.xaml(.cs)`, `tests/EvoOptimizer.Core.Tests/HistoryDashboardServiceTests.cs` |
+| **Alcance** | Consultar `EvoHistoryStore` existente en HISTORIAL y dirigir a cambios activos/reversión existente sin duplicar operaciones |
+
+**Implementación:**
+- El visor usa la misma base SQLite local `EvoFpsOptimizer/history.db`, muestra conteos reales por ventana temporal/categoría, hasta 20 registros recientes y el payload de solo lectura al seleccionar una fila.
+- Cada auditoría de solo lectura completada se incorpora al historial; si el guardado falla, el estado del análisis expone el error en vez de ocultarlo.
+- La carga informa errores en la vista; no limpia registros ni cambia Windows. El botón `CAMBIOS ACTIVOS` conduce al panel Live Monitor existente, donde se mantienen las confirmaciones y reversión.
+- Se reemplazó el estado de navegación placeholder por una pantalla parcial disponible; el análisis de Historial sigue deshabilitado y se identifica como pendiente.
+
+**Validación:** pruebas de integración del resumen y guardado de auditoría contra SQLite temporal; Release build de la solución: 0 errores (queda una advertencia xUnit2012 preexistente en `UnitTest1.cs:1034`); pruebas Core: 135/135. La navegación a HISTORIAL, la carga de registros reales y el enlace a cambios activos se verificaron en la aplicación. No se restauró ningún cambio.
+
+## TANDA 14 — Alcance veraz del análisis por área
+
+### T14-001 · Filtros de hallazgos por las áreas conectadas
+| Campo | Valor |
+| :--- | :--- |
+| **Estado** | `BUILD_VERIFIED` + `TEST_VERIFIED`; navegación y análisis de Sistema verificados en UI |
+| **Archivos** | `src/EvoOptimizer.App/Navigation/EvoNavigationCatalog.cs`, `src/EvoOptimizer.App/Views/EvoDashboardShell.xaml(.cs)`, `src/EvoOptimizer.App/MainWindow.xaml.cs` |
+| **Alcance** | Reutilizar la auditoría de solo lectura y filtrar los hallazgos existentes según el área solicitada, sin presentar un motor inexistente como disponible |
+
+**Implementación:**
+- Inicio muestra el informe completo; Sistema filtra almacenamiento, energía, servicios, inicio y procesos; Gaming muestra solo estado de CS2 y falta de mediciones; Hardware muestra hallazgos de componentes y telemetría.
+- Red, Laboratorio e Historial no habilitan un botón de análisis porque todavía no existe un análisis específico integrado para esas áreas. Sus funciones parciales y límites siguen identificados en el catálogo.
+- La entrada seleccionada acompaña el ámbito analizado; se exporta el informe general existente y la interfaz diferencia el número de hallazgos filtrados del total.
+- No se creó otro motor ni se aplicaron cambios al equipo.
+
+**Validación:** build Release de la solución en salida aislada: 0 errores/advertencias; pruebas Core: 133/133; `git diff --check` limpio. Se verificó la navegación por las siete áreas y la visualización filtrada de hallazgos de Sistema; los ámbitos Gaming y Hardware no se recorrieron interactivamente.
+
+## TANDA 13 — Integridad de evidencia y recuperación de optimizaciones
+
+### T13-001 · Salvaguardas del ciclo aplicar → medir → verificar → restaurar
+| Campo | Valor |
+| :--- | :--- |
+| **Estado** | `BUILD_VERIFIED` + `TEST_VERIFIED`; ejecución de cambios reales no realizada |
+| **Archivos** | `src/EvoOptimizer.Core/Optimization/OptimizationEvidence.cs`, `src/EvoOptimizer.Core/Optimization/WindowsOptimizationModels.cs`, `src/EvoOptimizer.Core/Optimization/OptimizationCatalog.cs`, `src/EvoOptimizer.Infrastructure/Optimization/WindowsChangeJournal.cs`, `src/EvoOptimizer.Infrastructure/Optimization/WindowsOptimizationService.cs`, `src/EvoOptimizer.Infrastructure/Measurement/OptimizationMeasurementService.cs`, `src/EvoOptimizer.App/ViewModels/EvoControlCenterViewModel.cs`, `tests/EvoOptimizer.Core.Tests/UnitTest1.cs` |
+| **Alcance** | Impedir veredictos de mejora con mediciones no comparables y no declarar restauraciones ni líneas base persistidas sin confirmación |
+
+**Implementación:**
+- El evaluador requiere identidad de optimización y contexto coincidentes y una captura candidata posterior a la línea base. El servicio valida además que la base preceda a la aplicación y la captura posterior sea posterior al cambio.
+- Si falla una aplicación y el rollback no puede verificarse, registra `RollbackFailed`, conserva la entrada activa en el diario y la expone como restaurable/reintentable en el catálogo y Control Center.
+- La persistencia de línea base informa el resultado. Si no se puede guardar en el historial o no se pueden cargar las mediciones previas, el Control Center lo muestra; no permite usar una línea base no persistida para habilitar un cambio. No se realizaron modificaciones de Windows durante esta tarea.
+
+**Validación:** build Release de la solución en salida aislada: 0 errores y una advertencia xUnit2012 preexistente en `UnitTest1.cs:1034`; pruebas Release: 133/133 pasaron; `git diff --check` limpio. No se ejecutó una optimización real ni se verificó un rollback sobre el equipo.
+
+## TANDA 12 — Limpieza avanzada del sistema (primer tramo seguro)
+
+### T12-001 · Cleaner integrado con análisis real y limpieza por antigüedad
+| Campo | Valor |
+| :--- | :--- |
+| **Estado** | `INTEGRATED` + `TEST_VERIFIED`; recorrido interactivo y limpieza real pendientes |
+| **Archivos** | `src/EvoOptimizer.Infrastructure/Cleanup/AdvancedSystemCleanupService.cs`, `src/EvoOptimizer.App/ViewModels/AdvancedSystemCleanupViewModel.cs`, `src/EvoOptimizer.App/Views/EvoSystemCleanerPanel.xaml(.cs)`, `src/EvoOptimizer.App/Navigation/EvoNavigationCatalog.cs`, `src/EvoOptimizer.App/Views/EvoDashboardShell.xaml(.cs)`, `src/EvoOptimizer.App/MainWindow.xaml.cs`, `tests/EvoOptimizer.Core.Tests/AdvancedSystemCleanupServiceTests.cs` |
+| **Alcance** | Integración de `Cleaner` en WINDOWS con categorías reales, filtros configurables, validación de rutas e historial local |
+
+**Implementación:**
+- El análisis recorre solo ubicaciones conocidas: TEMP del usuario y Windows, WER, volcados `.dmp`, miniaturas, cachés de shaders, cachés temporales de Edge/Chrome/Firefox, Windows Update, Delivery Optimization y Prefetch. Evita seguir puntos de reanálisis y deduplica las rutas físicas encontradas.
+- Se pueden seleccionar categorías limpiables y antigüedad mínima de 1, 3, 7, 14, 30 o 90 días. La limpieza vuelve a comprobar la ruta autorizada, la fecha, los atributos, los enlaces duros y el acceso exclusivo; no eleva privilegios, no borra carpetas y omite archivos inaccesibles o bloqueados. No procesa cachés de navegador mientras el navegador correspondiente esté abierto.
+- Solo son limpiables temporales, WER, volcados antiguos, miniaturas, cachés identificadas de shaders y cachés temporales de navegador. Cookies, contraseñas, sesiones, historial, perfiles, juegos, partidas y configuraciones no forman parte de las rutas.
+- El historial JSONL local registra resultado por archivo y solo atribuye bytes liberados a archivos eliminados cuya asignación física se midió; conserva por separado estimaciones del análisis.
+- Windows Update, Delivery Optimization, Prefetch y Papelera son informativos/de solo lectura. El registro no se modifica ni se declara analizado: todavía no existe un verificador conectado que identifique claves obsoletas con evidencia suficiente.
+
+**Validación:** `dotnet build EVO-FPS-OPTIMIZER.slnx -c Debug --no-restore` compiló la solución en salida aislada mientras la aplicación abierta bloqueaba el destino Debug normal: 0 errores y una advertencia xUnit2012 preexistente en `UnitTest1.cs:1030`. `dotnet test tests/EvoOptimizer.Core.Tests/EvoOptimizer.Core.Tests.csproj -c Debug` pasó 131/131, incluida una exploración real de solo lectura de las categorías y pruebas de límites de rutas/antigüedad. La aplicación abrió con el Dashboard, pero la usuaria estaba interactuando físicamente con EVO; Computer Use devolvió `interrupted` dos veces y no se insistió. Por ello, la navegación al panel y el flujo de limpieza desde UI no quedan certificados; tampoco se borró ningún archivo del equipo.
+
+## TANDA 11 — Navegación modular y catálogo de estados
+
+### T11-001 · Sidebar de ocho categorías conectada a módulos existentes
+| Campo | Valor |
+| :--- | :--- |
+| **Estado** | `BUILD_VERIFIED` + `TEST_VERIFIED`; recorrido visual de todas las rutas pendiente |
+| **Archivos** | `src/EvoOptimizer.App/Navigation/EvoNavigationCatalog.cs`, `src/EvoOptimizer.App/Views/EvoDashboardShell.xaml(.cs)`, `src/EvoOptimizer.App/Views/EvoControlCenterWindow.xaml.cs`, `src/EvoOptimizer.App/Views/EvoOptimizationHubPanel.xaml.cs`, `src/EvoOptimizer.App/Views/EvoTweakPanel.xaml(.cs)`, `EVO_IMPLEMENTATION_LEDGER.md` |
+| **Alcance** | IDs de navegación únicos, agrupación por categoría, estados veraces y rutas al UI/servicios que ya existen |
+
+**Mapa de componentes verificado antes del cambio:**
+- Inicio: `EvoDashboardShell`/`DashboardViewModel`; `EvoControlCenterWindow`/`EvoControlCenterViewModel`; alertas presentes dentro del ViewModel, aún sin bandeja propia.
+- Diagnóstico: `EvoTweakPanel` Scanner; `WindowsSystemAuditor` + `AdaptiveDiagnosticEngine` + `LiveTelemetryDiagnosticEvaluator`; proveedor de hardware/diagnóstico del Hub; sin motor de compatibilidad independiente.
+- Optimización: `AdaptiveOptimizationEngine`, recomendaciones en el ViewModel, catálogo único en Tweaks Lab y perfiles existentes; sin planner ni editor de perfiles separado.
+- Gaming: Live Monitor y captura/benchmark parcialmente disponibles; configuración limitada de CS2 existente; `T9-001 Game Optimizer` queda en backlog.
+- Hardware: fuentes parciales para CPU/RAM, GPU, almacenamiento y energía en Dashboard/diagnóstico; sin laboratorio de latencia de entrada.
+- Windows: procesos, servicios, startup y registry están distribuidos entre Control Center/Scanner/Tweaks; Debloat tiene pantalla propia; Cleaner, Network y Privacy no están conectados.
+- Laboratorio: servicios de PresentMon, medición, anomalías y hallazgos existen parcialmente; no hay pantallas independientes para los laboratorios ni centro unificado de informes.
+- Administración: servicios de historial/recuperación existen parcialmente; no hay vistas de historial, Update Guardian o mantenimiento; Settings se limita a objetivos del Dashboard.
+- EVO AI: pestaña transversal del Hub, enlazada aparte de las ocho categorías para no presentarla como motor de acción autónomo.
+
+**Implementación:** catálogo central con 38 módulos listados en el adjunto (el documento los llama “26”, discrepancia pendiente de aclaración documental) y un enlace transversal a EVO AI; IDs únicos validados, categorías desplegables con iconos, estados `DISPONIBLE`/`PARCIAL`/`PENDIENTE`/`BACKLOG`/`BLOQUEADO` y marca de ruta activa. Las rutas implementadas abren las pantallas actuales; los módulos sin pantalla propia muestran una ficha que explica estado, componente disponible y límites sin acciones simuladas. El catálogo de Tweaks solo se abre desde Tweaks Lab/Registry; las demás rutas no lo duplican.
+
+**Validación:** builds y tests Debug/Release de la solución correctos en salida aislada; 124/124 tests en ambas configuraciones; diff-check limpio. La compilación inicial completa reportó la advertencia xUnit2012 preexistente en `tests/EvoOptimizer.Core.Tests/UnitTest1.cs:1030`; la última compilación incremental terminó con 0 advertencias y 0 errores. La navegación aún no se ha recorrido en UI tras este cambio, por lo que no se declara `FUNCTIONALLY_VERIFIED`. No se inició T9-001, no se movieron proyectos/clases ni se editaron el auditor protegido, sus backups o `DIST/`.
+
+## TANDA 10 — Dashboard inspirado en la referencia EVO
+
+### T10-001 · UX: nuevo shell visual sin sustituir las funciones existentes
+| Campo | Valor |
+| :--- | :--- |
+| **Estado** | `FUNCTIONALLY_VERIFIED` + `BUILD_VERIFIED` + `TEST_VERIFIED` |
+| **Archivos** | `src/EvoOptimizer.App/MainWindow.xaml`, `src/EvoOptimizer.App/MainWindow.xaml.cs`, nuevos `src/EvoOptimizer.App/Views/EvoDashboardShell.xaml`, `src/EvoOptimizer.App/Views/EvoDashboardShell.xaml.cs`, `src/EvoOptimizer.App/ViewModels/DashboardViewModel.cs`, `EVO_IMPLEMENTATION_LEDGER.md` |
+| **Alcance** | Presentación y navegación hacia funciones ya integradas |
+
+**Qué se hizo:**
+- Dashboard de grafito/azul inspirado en la imagen: barra de producto con controles de ventana, navegación lateral, tarjetas de CPU/GPU/RAM/almacenamiento/Windows, gráficas livianas, accesos existentes, resumen de CS2 y panel de detalles diagnósticos.
+- Los botones de navegación abren Dashboard, diagnóstico, Control Center, Scanner/Tweaks/Debloat, Live Monitor y el tab CS2 Config real. Se conservan el analizador, exportación, métricas y paneles existentes.
+- Las superficies sin fuente actual (uso de GPU, temperatura, capacidad de disco, actualizaciones Windows, FPS, lows, frametime, frecuencia del monitor) se marcan indisponibles/no medidas. No se copian valores ilustrativos de la maqueta.
+- La hora de cabecera es la hora local del equipo; las curvas siguen usando las muestras reales CPU/RAM ya capturadas.
+
+**Validación funcional:** la aplicación Debug compilada abrió con la nueva ventana y la UI mostró CPU/RAM obtenidas en vivo, hardware detectado y capacidades no soportadas marcadas como no disponibles. Se ejecutó el análisis desde el botón; mostró 22 hallazgos (incluidos hechos CIM y las observaciones `LIVE_TELEMETRY_COVERAGE`, `LIVE_CPU_LOAD` y `LIVE_MEMORY_LOAD`), 2 advertencias y la ruta del informe exportado. Se confirmó que el TXT existe y contiene la auditoría de solo lectura. No se aplicaron cambios al sistema.
+
+**Incidencia corregida durante la validación:** el primer arranque falló porque `ProgressBar.Value` usaba el modo TwoWay predeterminado contra `MemoryUsagePercentValue`, una propiedad de solo lectura. Los bindings `CpuUsagePercentValue` y `MemoryUsagePercentValue` del Dashboard ahora especifican `Mode=OneWay`; tras rebuild, el inicio y el análisis completaron correctamente.
+
+**Validación automatizada:** `dotnet build EVO-FPS-OPTIMIZER.slnx -c Debug --no-restore` y `-c Release --no-restore` → 0 advertencias, 0 errores; `dotnet test EVO-FPS-OPTIMIZER.slnx -c Debug --no-build` y `-c Release --no-build` → 124/124 en ambas configuraciones; `git diff --check` limpio (solo advertencias informativas de normalización LF/CRLF).
+
+## TANDA 8 — Diagnóstico con telemetría real del Dashboard
+
+### T8-001 · Evidencia observacional de hardware, CPU y memoria
+| Campo | Valor |
+| :--- | :--- |
+| **Estado** | `FUNCTIONALLY_VERIFIED` + `TEST_VERIFIED` |
+| **Archivos** | `src/EvoOptimizer.Core/Diagnosis/LiveTelemetryDiagnosticEvaluator.cs`, `src/EvoOptimizer.App/ViewModels/DashboardViewModel.cs`, `src/EvoOptimizer.App/MainWindow.xaml.cs`, `tests/EvoOptimizer.Core.Tests/LiveTelemetryDiagnosticEvaluatorTests.cs` |
+| **Alcance** | Enriquecer el análisis manual existente; solo lectura, no aplica optimizaciones |
+
+**Qué se hizo:**
+- El botón de análisis combina el diagnóstico existente de la auditoría Windows/CIM con CPU global y memoria física que el Dashboard ya muestrea con `GetSystemTimes` y `GlobalMemoryStatusEx`.
+- El informe incluye perfil real de hardware, cobertura/ventana y promedio/máximo de carga. Señala carga alta solo con al menos cinco muestras y umbral elevado en al menos el 80% de ellas; lo califica como señal observacional, no como cuello de botella confirmado.
+- Ausencia o insuficiencia de mediciones queda explícita; no se sustituye por cero. No se diagnostica temperatura, GPU, procesos, FPS ni frametime sin fuentes disponibles.
+- Se reutilizó el flujo de `AnalyzeSystem_Click`, sus controles y exportación de auditoría. Sin escrituras del sistema.
+
+**Pruebas añadidas:** insuficiencia de muestras, medición normal CPU/RAM, CPU elevada sostenida, picos no sostenidos, presión de memoria sostenida y perfil de hardware.
+
+**Validación funcional:** desde el Dashboard se ejecutó el botón de análisis y se observaron en el mismo listado hallazgos de auditoría Windows/CIM junto con CPU/RAM medidas durante 30 muestras (ventana de 29 s en el hallazgo de cobertura); el informe terminó con 22 hallazgos y 2 advertencias y se exportó a `C:\Users\ZuKA\AppData\Local\EvoFpsOptimizer\Audits\EVO_Audit_20261107-071150.txt`. La exportación existe y contiene auditoría de solo lectura.
+
+**Pruebas:** 124/124 en Debug y 124/124 en Release; builds de la solución Debug/Release con 0 advertencias y 0 errores; `git diff --check` limpio. No se modificó Windows.
+
+## TANDA 7 — Integración de la navegación en la ventana principal
+
+### T7-001 · UX: Dashboard y módulos existentes dentro de un único shell
+| Campo | Valor |
+| :--- | :--- |
+| **Estado** | `FUNCTIONALLY_VERIFIED` |
+| **Prioridad** | ALTA |
+| **Archivos** | `src/EvoOptimizer.App/MainWindow.xaml`, `src/EvoOptimizer.App/MainWindow.xaml.cs`, `src/EvoOptimizer.App/Views/EvoControlCenterWindow.xaml`, `src/EvoOptimizer.App/Views/EvoControlCenterWindow.xaml.cs`, eliminación de `src/EvoOptimizer.App/Navigation/EvoControlCenterLauncher.cs` |
+| **Alcance** | Integración del Dashboard, Hub, Scanner/Tweaks/Debloat y Live Monitor ya existentes |
+
+**Qué se hizo:**
+- Se incorporó una sidebar en la ventana principal con acceso al Dashboard y al Control Center; el contenido de este último conserva sus tres pestañas funcionales.
+- `EvoControlCenterWindow` ahora es un `UserControl` reutilizable; sus paneles y su ViewModel se integran en MainWindow. Se retiró el launcher que abría una segunda ventana.
+- El cierre de MainWindow espera la liberación asíncrona del ViewModel del Control Center y luego del Dashboard.
+- No se añadieron herramientas para las áreas del nuevo brief que todavía no tienen implementaciones conectadas.
+
+**Validación:** build Debug exitoso; 107/107 pruebas; `git diff --check` limpio. Build Release exitoso y se generó `src/EvoOptimizer.App/bin/Release/net10.0-windows/EvoOptimizer.App.exe` (una advertencia xUnit2012 preexistente en `tests/EvoOptimizer.Core.Tests/UnitTest1.cs:1030`). Se abrió la aplicación compilada y se navegó entre Dashboard, Control Center, Scanner/Tweaks/Debloat y Live Monitor con Computer Use.
+
+## TANDA 6 — Rediseño visual premium de superficies existentes
+
+### T6-001 · UX: sistema visual compartido y jerarquía del Dashboard / Control Center
+| Campo | Valor |
+| :--- | :--- |
+| **Estado** | `TEST_VERIFIED` |
+| **Prioridad** | ALTA |
+| **Archivos** | `src/EvoOptimizer.App/App.xaml`, `src/EvoOptimizer.App/MainWindow.xaml`, `src/EvoOptimizer.App/Themes/EvoDark.xaml`, `src/EvoOptimizer.App/Views/EvoControlCenterWindow.xaml`, `src/EvoOptimizer.App/Views/EvoOptimizationHubPanel.xaml`, `src/EvoOptimizer.App/Views/EvoTweakPanel.xaml`, `src/EvoOptimizer.App/Views/EvoLiveMonitorPanel.xaml` |
+| **Alcance** | Presentación XAML; no se modificaron ViewModels, comandos ni servicios |
+
+**Qué se hizo:**
+- Se estableció un tema global grafito con superficies y bordes diferenciados, azul eléctrico y colores semánticos; botones con estados hover, pressed y disabled, y paneles con radios/espaciado coherentes.
+- El Dashboard presenta la identidad «PERFORMANCE ENGINEERING SYSTEM» y objetivos de uso; sus binding names, análisis y datos reales se conservaron.
+- El Control Center adopta una navegación por pestañas estilizadas. Se mantienen únicamente sus tres vistas conectadas: Control Center, Scanner/Tweaks/Debloat y Live Monitor.
+- Se migró la paleta de las vistas existentes sin añadir módulos decorativos ni datos simulados.
+
+**Validación:** la compilación, las pruebas y el recorrido de UI en ejecución se registran en T7-001.
 
 ---
 
@@ -569,3 +918,24 @@ Guardar los resultados A/B en la base de datos local SQLite para que EVO aprenda
 | **Área** | Monitoring & Evidence |
 
 Permitir arrastrar o cargar un archivo CSV generado por PresentMon para procesar automáticamente todos los frametimes y generar la comparación A/B con datos directos del motor de captura.
+
+---
+
+### T9-001 · EVO Game Optimizer específico por juego
+| Campo | Valor |
+| :--- | :--- |
+| **Estado** | `PARTIAL_IMPLEMENTATION` — gestor reversible de configuración CS2 implementado; motor universal pendiente |
+| **Prioridad** | CS2 primero; ampliar solo con fuentes y perfiles verificados |
+| **Área** | CS2 · configuración por juego |
+| **Archivos de esta fase** | `src/EvoOptimizer.Infrastructure/GameProfiles/Cs2AutoexecConfigService.cs`, `src/EvoOptimizer.App/ViewModels/EvoControlCenterViewModel.GameConfig.cs`, `src/EvoOptimizer.App/Views/EvoOptimizationHubPanel.xaml(.cs)`, `tests/EvoOptimizer.Core.Tests/Cs2AutoexecConfigServiceTests.cs` |
+| **Especificación fuente** | Adjunto `EVO GAME OPTIMIZER — UNIVERSAL GAME-SPECIFIC PERFORMANCE ENGINE` (463 líneas; recibido el 2026-11-07) |
+| **Validación** | Tests Debug/Release y builds Debug/Release exitosos; 124 pruebas totales. No se aplicó configuración real en este equipo. |
+
+**Implementado en esta fase:**
+- Nueva pestaña **CS2 CONFIG** dentro del Control Center integrado en la ventana principal; abre y lee únicamente `game\csgo\cfg\autoexec.cfg` elegido por la usuaria.
+- Administra un bloque delimitado por EVO, conserva el texto no administrado, acepta solo variables numéricas de una lista acotada (`cl_hud_color`, `cl_showfps`, `fps_max`, `fps_max_ui`, `r_fullscreen_gamma`) y no precarga valores ni perfiles que impongan FPS.
+- Toda escritura/restauración exige confirmación explícita desde la UI, rechaza operaciones mientras CS2 está abierto y verifica el archivo después de escribir. Una configuración existente se copia a un backup adyacente; el diario local permite revertir el último cambio. Si el archivo cambió externamente, se bloquea la reversión. Si no existía, revertir quita el nuevo archivo solo si sigue intacto.
+- La funcionalidad solo modifica el `autoexec.cfg` elegido; no cambia Windows, Steam/launch options, anticheat ni memoria del juego. No declara mejoras de FPS ni valida que el juego actual reconozca cada variable.
+- Pruebas cubren lectura sin datos, escritura/restauración exacta, creación reversible, preservación fuera del bloque EVO, detección de modificaciones externas, validación de nombres/valores y rechazo de rutas ajenas a CS2.
+
+**Pendiente de la especificación mayor:** detección de instalaciones/biblioteca, perfiles recomendados con evidencia, diagnóstico por juego y fuentes compatibles de frametime/latencia, benchmark A/B, sesión/telemetría dedicada, perfiles para otros juegos y versionado más amplio. No se simulan ni se declaran funcionales.

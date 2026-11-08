@@ -36,6 +36,10 @@ public sealed record ProcessGovernanceResult(
 [SupportedOSPlatform("windows")]
 public sealed class ProcessGovernanceService
 {
+    private sealed record OriginalProcessState(
+        ProcessPriorityClass Priority,
+        long StartTimeUtcTicks);
+
     private static readonly HashSet<string> CriticalNames = new(
         new[]
         {
@@ -46,7 +50,7 @@ public sealed class ProcessGovernanceService
         },
         StringComparer.OrdinalIgnoreCase);
 
-    private readonly Dictionary<int, ProcessPriorityClass> _originalPriorities = new();
+    private readonly Dictionary<int, OriginalProcessState> _originalPriorities = new();
     private readonly EvoHistoryStore? _history;
     private readonly object _gate = new();
 
@@ -99,23 +103,40 @@ public sealed class ProcessGovernanceService
     public async Task<ProcessGovernanceResult> ThrottleAsync(
         int processId,
         bool userAuthorized,
+        bool allowUnclassified = false,
         CancellationToken cancellationToken = default)
     {
         if (!userAuthorized)
             return new(false, "Bajar la prioridad requiere autorización explícita.");
 
         string? name;
+        long startTimeUtcTicks;
 
         try
         {
             using var process = Process.GetProcessById(processId);
             name = process.ProcessName;
+            startTimeUtcTicks = process.StartTime.ToUniversalTime().Ticks;
 
-            if (ClassifyName(process.ProcessName) == ProcessImportance.Critical)
+            ProcessImportance importance = ClassifyName(process.ProcessName);
+            if (importance == ProcessImportance.Critical)
             {
                 return new(
                     false,
                     $"'{process.ProcessName}' es un proceso crítico protegido. No se modifica.");
+            }
+
+            if (importance == ProcessImportance.Unknown)
+            {
+                // Game Booster: la usuaria seleccionó el proceso explícitamente.
+                // Sólo se permite si no está protegido por la política de Boost.
+                if (!allowUnclassified ||
+                    EvoOptimizer.Core.Gaming.BoostProcessPolicy.IsProtected(process.ProcessName))
+                {
+                    return new(
+                        false,
+                        $"'{process.ProcessName}' no está clasificado. EVO no cambia la prioridad de procesos desconocidos.");
+                }
             }
 
             if (process.PriorityClass is ProcessPriorityClass.High or
@@ -129,29 +150,46 @@ public sealed class ProcessGovernanceService
             if (process.PriorityClass == ProcessPriorityClass.BelowNormal)
                 return new(false, $"'{process.ProcessName}' ya está en BelowNormal.");
 
+            if (_history is null)
+                return new(false, "No se configuró el historial EVO; no se modificó la prioridad.");
+
             lock (_gate)
             {
                 if (!_originalPriorities.ContainsKey(processId))
-                    _originalPriorities[processId] = process.PriorityClass;
+                    _originalPriorities[processId] = new OriginalProcessState(
+                        process.PriorityClass,
+                        startTimeUtcTicks);
             }
 
             process.PriorityClass = ProcessPriorityClass.BelowNormal;
 
             if (process.PriorityClass != ProcessPriorityClass.BelowNormal)
             {
-                RestoreSilently(processId);
-                return new(false, "Windows no confirmó el cambio de prioridad.");
+                ProcessGovernanceResult rollback = TryRestoreOriginalPriority(processId);
+                return new(false, $"Windows no confirmó el cambio de prioridad. {rollback.Message}");
             }
         }
         catch (Exception ex) when (
             ex is ArgumentException or InvalidOperationException or
             System.ComponentModel.Win32Exception or UnauthorizedAccessException)
         {
-            RestoreSilently(processId);
+            TryRestoreOriginalPriority(processId);
             return new(false, $"No se pudo cambiar la prioridad: {ex.Message}");
         }
 
-        await SaveHistoryAsync("Throttle", processId, name, cancellationToken);
+        try
+        {
+            await SaveHistoryAsync("Throttle", processId, name, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            ProcessGovernanceResult rollback = TryRestoreOriginalPriority(processId);
+            return new(
+                false,
+                rollback.Success
+                    ? $"La prioridad original fue restaurada porque falló el historial EVO: {ex.Message}"
+                    : $"Falló el historial EVO y no se pudo verificar la restauración. {rollback.Message}");
+        }
 
         return new(
             true,
@@ -164,34 +202,32 @@ public sealed class ProcessGovernanceService
     {
         string? name = null;
 
+        ProcessGovernanceResult restore = TryRestoreOriginalPriority(processId);
+        if (!restore.Success)
+            return restore;
+
         try
         {
             using var process = Process.GetProcessById(processId);
             name = process.ProcessName;
-
-            ProcessPriorityClass original;
-
-            lock (_gate)
-            {
-                if (!_originalPriorities.TryGetValue(processId, out original))
-                    return new(false, "No hay un cambio de prioridad registrado para ese PID.");
-            }
-
-            process.PriorityClass = original;
-
-            lock (_gate)
-                _originalPriorities.Remove(processId);
         }
-        catch (Exception ex) when (
-            ex is ArgumentException or InvalidOperationException or
-            System.ComponentModel.Win32Exception or UnauthorizedAccessException)
+        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException)
         {
-            return new(false, $"No se pudo restaurar la prioridad: {ex.Message}");
+            return new(false, $"La prioridad se restauró, pero no se pudo identificar el proceso para registrar el historial: {ex.Message}");
         }
 
-        await SaveHistoryAsync("Restore", processId, name, cancellationToken);
+        try
+        {
+            await SaveHistoryAsync("Restore", processId, name, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            return new(
+                true,
+                $"{restore.Message} Advertencia: la restauración no pudo guardarse en el historial EVO: {ex.Message}");
+        }
 
-        return new(true, $"Prioridad original restaurada para el PID {processId}.");
+        return restore;
     }
 
     public IReadOnlyList<int> GetThrottledProcessIds()
@@ -213,30 +249,53 @@ public sealed class ProcessGovernanceService
             "cs2" or "cs2.exe" => ProcessImportance.High,
             "steam" or "steamwebhelper" or "discord" or "obs64" or
                 "explorer" or "msedge" or "chrome" or "firefox" => ProcessImportance.Normal,
-            _ => ProcessImportance.Background
+            _ => ProcessImportance.Unknown
         };
     }
 
-    private void RestoreSilently(int processId)
+    private ProcessGovernanceResult TryRestoreOriginalPriority(int processId)
     {
+        OriginalProcessState original;
+        lock (_gate)
+        {
+            if (!_originalPriorities.TryGetValue(processId, out original!))
+                return new(false, "No hay una prioridad original registrada para ese PID.");
+        }
+
         try
         {
-            ProcessPriorityClass original;
-
-            lock (_gate)
+            using var process = Process.GetProcessById(processId);
+            if (process.StartTime.ToUniversalTime().Ticks != original.StartTimeUtcTicks)
             {
-                if (!_originalPriorities.TryGetValue(processId, out original))
-                    return;
-
-                _originalPriorities.Remove(processId);
+                lock (_gate)
+                    _originalPriorities.Remove(processId);
+                return new(false, "El PID ahora pertenece a otro proceso. Se rechazó el rollback.");
             }
 
-            using var process = Process.GetProcessById(processId);
-            process.PriorityClass = original;
+            if (process.PriorityClass == original.Priority)
+            {
+                lock (_gate)
+                    _originalPriorities.Remove(processId);
+                return new(true, "La prioridad original seguía activa; no se requirió rollback.");
+            }
+
+            if (process.PriorityClass != ProcessPriorityClass.BelowNormal)
+                return new(false, "La prioridad fue modificada externamente; no se sobrescribió.");
+
+            process.PriorityClass = original.Priority;
+            if (process.PriorityClass != original.Priority)
+                return new(false, "Windows no confirmó la restauración de la prioridad original.");
+
+            lock (_gate)
+                _originalPriorities.Remove(processId);
+
+            return new(true, $"Prioridad original restaurada para el PID {processId}.");
         }
-        catch
+        catch (Exception ex) when (
+            ex is ArgumentException or InvalidOperationException or
+            System.ComponentModel.Win32Exception or UnauthorizedAccessException)
         {
-            // El proceso pudo finalizar; no hay nada que restaurar.
+            return new(false, $"No se pudo restaurar la prioridad: {ex.Message}");
         }
     }
 
@@ -247,26 +306,19 @@ public sealed class ProcessGovernanceService
         CancellationToken cancellationToken)
     {
         if (_history is null)
-            return;
+            throw new InvalidOperationException("No se configuró el historial EVO.");
 
-        try
-        {
-            await _history.SaveAsync(
-                "ProcessGovernance",
-                new
-                {
-                    Action = action,
-                    ProcessId = processId,
-                    ProcessName = name,
-                    NewPriority = action == "Throttle" ? "BelowNormal" : "Original",
-                    Timestamp = DateTimeOffset.UtcNow
-                },
-                DateTimeOffset.UtcNow,
-                cancellationToken);
-        }
-        catch
-        {
-            // El cambio de prioridad no debe fallar por SQLite.
-        }
+        await _history.SaveAsync(
+            "ProcessGovernance",
+            new
+            {
+                Action = action,
+                ProcessId = processId,
+                ProcessName = name,
+                NewPriority = action == "Throttle" ? "BelowNormal" : "Original",
+                Timestamp = DateTimeOffset.UtcNow
+            },
+            DateTimeOffset.UtcNow,
+            cancellationToken);
     }
 }

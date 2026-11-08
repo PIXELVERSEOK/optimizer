@@ -25,12 +25,12 @@ public sealed record Cs2BenchmarkMetrics(
     double StutterRatePercent,
     int FrameCount,
     double DurationSeconds,
-    double SystemCpuPercent,
+    double? SystemCpuPercent,
     double? Cs2CpuPercent,
     double? GpuUsagePercent,
     double? GpuSharedMemoryMb,
-    double MemoryUsagePercent,
-    double CommitUsedMb);
+    double? MemoryUsagePercent,
+    double? CommitUsedMb);
 
 public sealed record Cs2ComparisonResult(
     Cs2BenchmarkMetrics Baseline,
@@ -98,25 +98,25 @@ public sealed class Cs2ExperimentOrchestrator
 
         var notes = new List<string>();
 
-        // Correlación con Intel UHD y Memoria
+        // Correlación observacional con uso de GPU y commit.
         bool isGpuBound = (candidate.GpuUsagePercent.HasValue && candidate.GpuUsagePercent.Value >= 92) ||
                           (baseline.GpuUsagePercent.HasValue && baseline.GpuUsagePercent.Value >= 92);
 
         if (isGpuBound)
         {
-            notes.Add("Límite gráfico de Intel UHD detectado (GPU >= 92%): los FPS promedio están limitados por la GPU integrada. La ganancia de rendimiento debe evaluarse estrictamente por estabilidad de 1% Low.");
+            notes.Add("Uso de GPU >= 92% observado en una de las capturas; puede existir un límite gráfico. Confirmá con escenarios repetidos y comparables.");
         }
 
-        if (candidate.CommitUsedMb > 12000)
+        if (candidate.CommitUsedMb is > 12000)
         {
-            notes.Add($"Presión elevada de memoria commit ({candidate.CommitUsedMb:F0} MB): riesgo de page faults concurrentes.");
+            notes.Add($"Commit elevado observado ({candidate.CommitUsedMb.Value:F0} MB); EVO no mide page faults en esta captura.");
         }
 
         // Evaluación con RegressionGuard del Core
         var baselineMeasurement = new RegressionMeasurement(
             baseline.Timestamp,
             "CS2_Benchmark",
-            "1920x1080",
+            "UNKNOWN",
             "PresentMon",
             baseline.AverageFps,
             baseline.OnePercentLowFps,
@@ -129,7 +129,7 @@ public sealed class Cs2ExperimentOrchestrator
         var candidateMeasurement = new RegressionMeasurement(
             candidate.Timestamp,
             "CS2_Benchmark",
-            "1920x1080",
+            "UNKNOWN",
             "PresentMon",
             candidate.AverageFps,
             candidate.OnePercentLowFps,
@@ -164,14 +164,14 @@ public sealed class Cs2ExperimentOrchestrator
         else if (deltaOneLow >= 3.0 && deltaP99 <= 0)
         {
             verdict = ExperimentVerdict.ImprovementVerified;
-            explanation = $"MEJORA VERIFICADA: 1% Low mejoró {deltaOneLow:+0.0;-0.0}% y la latencia P99 se redujo {deltaP99:+0.0;-0.0}%. Consistencia demostrada.";
+            explanation = $"MEJORA OBSERVADA en una captura por condición: 1% Low cambió {deltaOneLow:+0.0;-0.0}% y P99 {deltaP99:+0.0;-0.0}%. Repetí el mismo escenario para confirmar; esta comparación aislada no demuestra causalidad.";
             shouldKeep = true;
             requiresRollback = false;
         }
         else if (isGpuBound && Math.Abs(deltaAvgFps) < 2.0 && deltaOneLow > 0)
         {
             verdict = ExperimentVerdict.GpuBottleneckDominant;
-            explanation = $"LÍMITE GRÁFICO DOMINANTE: Intel UHD al tope. FPS promedio sin cambios significativos ({deltaAvgFps:+0.0;-0.0}%), pero estabilidad 1% Low mejoró ({deltaOneLow:+0.0;-0.0}%).";
+            explanation = $"USO DE GPU ELEVADO OBSERVADO: FPS promedio cambió {deltaAvgFps:+0.0;-0.0}% y 1% Low {deltaOneLow:+0.0;-0.0}%. El dato no identifica por sí solo un cuello de botella ni demuestra causalidad.";
             shouldKeep = deltaOneLow >= 2.0;
             requiresRollback = false;
         }

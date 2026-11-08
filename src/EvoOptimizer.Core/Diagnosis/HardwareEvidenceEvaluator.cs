@@ -70,6 +70,29 @@ public sealed record ProcessorEvidence(
     EvidenceConfidence PowerConfidence,
     string PowerExplanation);
 
+/// <summary>
+/// Evidencia de GPU y driver tal como la informa Windows. AdapterRAM no se
+/// expone como VRAM dedicada: en gráficos integrados es memoria compartida y
+/// no constituye una medición fiable de VRAM.
+/// </summary>
+public sealed record GraphicsDeviceEvidence(
+    int Index,
+    string? Name,
+    string? AdapterCompatibility,
+    string? DriverVersion,
+    string? DriverDate,
+    string? VideoProcessor,
+    string? PnpDeviceId,
+    string? Status,
+    uint? HorizontalResolution,
+    uint? VerticalResolution,
+    uint? RefreshRateHz)
+{
+    public bool HasDriverEvidence =>
+        !string.IsNullOrWhiteSpace(DriverVersion) ||
+        !string.IsNullOrWhiteSpace(DriverDate);
+}
+
 public enum SmartCoverage
 {
     Unavailable,
@@ -129,7 +152,15 @@ public sealed record PowerPlanEvidence(
 public sealed record ServiceEvidence(
     int AutoStartCount,
     int StoppedAutoStartCount,
-    IReadOnlyList<string> StoppedServiceNames);
+    IReadOnlyList<string> StoppedServiceNames,
+    IReadOnlyList<WindowsServiceEvidence>? Inventory = null);
+
+public sealed record WindowsServiceEvidence(
+    string Name,
+    string DisplayName,
+    string State,
+    string StartMode,
+    int? ProcessId);
 
 public sealed record StartupEntryEvidence(
     IReadOnlyList<string> Names);
@@ -144,6 +175,7 @@ public sealed record HardwareDiagnosticSnapshot(
     string ComputerName,
     DualChannelAssessment Memory,
     ProcessorEvidence Cpu,
+    IReadOnlyList<GraphicsDeviceEvidence> Graphics,
     IReadOnlyList<StorageDeviceEvidence> Storage,
     TrimAssessment Trim,
     PowerPlanEvidence PowerPlan,
@@ -167,6 +199,7 @@ public static partial class HardwareEvidenceEvaluator
             ComputerName: audit.ComputerName,
             Memory: AssessMemory(audit),
             Cpu: AssessProcessor(audit),
+            Graphics: AssessGraphics(audit),
             Storage: AssessStorage(audit),
             Trim: AssessTrim(audit),
             PowerPlan: AssessPowerPlan(audit),
@@ -367,6 +400,36 @@ public static partial class HardwareEvidenceEvaluator
             InstantaneousPowerWatts: null,
             PowerConfidence: EvidenceConfidence.Unknown,
             PowerExplanation: explanation);
+    }
+
+    // ── GPU y driver: sólo lo que Windows informa ─────────────────────────────
+
+    /// <summary>
+    /// Lee los adaptadores gráficos de la auditoría existente. No consulta nada
+    /// nuevo ni inventa versión/fecha de driver: si CIM no las informa, quedan
+    /// null y el consumidor las muestra como UNKNOWN.
+    /// </summary>
+    public static IReadOnlyList<GraphicsDeviceEvidence> AssessGraphics(
+        SystemAuditReport audit)
+    {
+        return Indices(audit, "GPU")
+            .Select(index => new GraphicsDeviceEvidence(
+                index,
+                Indexed(audit, "GPU", index, "Name"),
+                Indexed(audit, "GPU", index, "AdapterCompatibility"),
+                Indexed(audit, "GPU", index, "DriverVersion"),
+                Indexed(audit, "GPU", index, "DriverDate"),
+                Indexed(audit, "GPU", index, "VideoProcessor"),
+                Indexed(audit, "GPU", index, "PNPDeviceID"),
+                Indexed(audit, "GPU", index, "Status"),
+                ToUInt(Indexed(audit, "GPU", index, "CurrentHorizontalResolution")),
+                ToUInt(Indexed(audit, "GPU", index, "CurrentVerticalResolution")),
+                ToUInt(Indexed(audit, "GPU", index, "CurrentRefreshRate"))))
+            .Where(device =>
+                device.Name is not null ||
+                device.DriverVersion is not null ||
+                device.PnpDeviceId is not null)
+            .ToArray();
     }
 
     // ── Almacenamiento: NVMe, SMART completo y HealthStatus ─────────────────
@@ -669,11 +732,25 @@ public static partial class HardwareEvidenceEvaluator
         int total = 0;
         int stopped = 0;
         var stoppedNames = new List<string>();
+        var inventory = new List<WindowsServiceEvidence>();
 
         foreach (int index in Indices(audit, "Servicios"))
         {
+            string? name = Indexed(audit, "Servicios", index, "Name");
+            string? displayName = Indexed(audit, "Servicios", index, "DisplayName");
             string? startMode = Indexed(audit, "Servicios", index, "StartMode");
             string? state = Indexed(audit, "Servicios", index, "State");
+            string? processId = Indexed(audit, "Servicios", index, "ProcessId");
+
+            if (string.IsNullOrWhiteSpace(name))
+                continue;
+
+            inventory.Add(new WindowsServiceEvidence(
+                name,
+                string.IsNullOrWhiteSpace(displayName) ? name : displayName,
+                state ?? "UNKNOWN",
+                startMode ?? "UNKNOWN",
+                ToInt(processId)));
 
             if (!string.Equals(startMode, "Auto", StringComparison.OrdinalIgnoreCase))
                 continue;
@@ -694,7 +771,7 @@ public static partial class HardwareEvidenceEvaluator
             }
         }
 
-        return new ServiceEvidence(total, stopped, stoppedNames);
+        return new ServiceEvidence(total, stopped, stoppedNames, inventory);
     }
 
     public static StartupEntryEvidence AssessStartup(SystemAuditReport audit)
@@ -835,20 +912,39 @@ public static partial class HardwareEvidenceEvaluator
         int index,
         string property)
     {
-        return Value(audit, category, $"[{index}] {property}");
+        string? indexed = Value(audit, category, $"[{index}] {property}");
+
+        if (indexed is not null)
+            return indexed;
+
+        // PowerShell 5.1 serializa un array de un solo elemento como objeto
+        // JSON (sin prefijo [n]) al cruzar el retorno de una función. Ese
+        // único elemento se lee como índice 0 en lugar de perderse.
+        return index == 0 ? Value(audit, category, property) : null;
     }
 
     private static IEnumerable<int> Indices(
         SystemAuditReport audit,
         string category)
     {
-        return audit.Facts
+        int[] indexed = audit.Facts
             .Where(f => f.Category == category)
             .Select(f => ParseIndex(f.Name))
             .Where(i => i.HasValue)
             .Select(i => i!.Value)
             .Distinct()
-            .OrderBy(i => i);
+            .OrderBy(i => i)
+            .ToArray();
+
+        if (indexed.Length > 0)
+            return indexed;
+
+        // Sin prefijos [n] pero con hechos planos: la categoría vino como un
+        // objeto único (GPU, disco o módulo de RAM único). Se trata como [0].
+        bool hasPlainFacts = audit.Facts.Any(f =>
+            f.Category == category && ParseIndex(f.Name) is null);
+
+        return hasPlainFacts ? new[] { 0 } : Array.Empty<int>();
     }
 
     private static int? ParseIndex(string name)

@@ -180,30 +180,11 @@ public sealed class StartupBackgroundAnalyzer
         string command,
         string source)
     {
-        var normalized = command.ToLowerInvariant();
-
-        var impact = normalized.Contains("onedrive") ||
-                     normalized.Contains("teams") ||
-                     normalized.Contains("discord") ||
-                     normalized.Contains("steam") ||
-                     normalized.Contains("adobe")
-            ? StartupImpact.Medium
-            : StartupImpact.Unknown;
-
-        var recommendation = impact switch
-        {
-            StartupImpact.Medium =>
-                "Revisar si necesita iniciarse con Windows. No deshabilitar sin confirmar su función.",
-
-            _ =>
-                "Identificar fabricante y función antes de modificar el inicio."
-        };
-
         return new StartupItem(
             name,
             command,
             source,
-            impact,
-            recommendation);
+            StartupImpact.Unknown,
+            "Impacto de arranque no medido. El nombre del producto no demuestra consumo ni retraso; identifica su función antes de modificar el inicio.");
     }
 }

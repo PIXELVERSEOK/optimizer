@@ -319,7 +319,7 @@ public sealed partial class EvoControlCenterViewModel
             "Equipo", "Placa madre", "BIOS", "CPU", "GPU", "RAM", "Arreglo de memoria",
             "Windows", "Discos", "Disco físico", "Particiones", "Volúmenes",
             "SMART predictivo", "Almacenamiento", "Contadores de confiabilidad",
-            "TRIM", "Plan de energía", "Red"
+            "TRIM", "Plan de energía", "Red", "Servicios"
         };
 
         foreach (string category in hardwareCategories)
@@ -336,8 +336,22 @@ public sealed partial class EvoControlCenterViewModel
             }
         }
 
-        int services = report.Facts.Count(fact => fact.Category == "Servicios");
+        AuditFact[] serviceStartModes = report.Facts
+            .Where(fact =>
+                fact.Category == "Servicios" &&
+                fact.Name.EndsWith("StartMode", StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+        int services = serviceStartModes.Count(fact =>
+            string.Equals(fact.Value, "Auto", StringComparison.OrdinalIgnoreCase));
         int startup = report.Facts.Count(fact => fact.Category == "Inicio");
+
+        ScannerRows.Add(new HardwareFactRow(
+            "Resumen",
+            "Servicios inventariados",
+            serviceStartModes.Length > 0 ? serviceStartModes.Length.ToString() : "UNKNOWN",
+            "Win32_Service",
+            serviceStartModes.Length > 0 ? "SYSTEM_REPORTED" : "UNKNOWN",
+            stamp));
 
         ScannerRows.Add(new HardwareFactRow(
             "Resumen",

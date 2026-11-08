@@ -170,8 +170,9 @@ public partial class EvoLiveMonitorPanel : UserControl
                 : $"Comando: {candidate.Command}\n" +
                   $"Recomendación: {candidate.Recommendation}\n") +
             "\nYa existe una línea base medida. Se quitará sólo de " +
-            "HKCU\\...\\Run, podrá restaurarse desde los cambios activos y " +
-            "exigirá una medición posterior para conservar el cambio.";
+            "HKCU\\...\\Run y podrá restaurarse desde los cambios activos. " +
+            "EVO no mide el tiempo de arranque por aplicación; reiniciá y repetí " +
+            "la misma carga antes de comparar métricas. No se garantiza una mejora.";
 
         if (MessageBox.Show(
                 Window.GetWindow(this),
@@ -307,8 +308,9 @@ public partial class EvoLiveMonitorPanel : UserControl
         string message =
             "¿Capturar la línea base de esta aplicación de inicio?\n\n" +
             $"Aplicación: {valueName}\n\n" +
-            "La medición durará 30 s y registrará CPU, RAM, Commit y procesos. " +
-            "Sin línea base no se puede desactivar la aplicación.";
+            "La captura durará 30 s y registrará CPU, RAM, Commit y procesos. " +
+            "Es una observación general del sistema, no una medición del tiempo de " +
+            "arranque de esta aplicación.";
 
         if (MessageBox.Show(
                 Window.GetWindow(this),
@@ -341,7 +343,11 @@ public partial class EvoLiveMonitorPanel : UserControl
         string message =
             "¿Ejecutar la medición posterior?\n\n" +
             $"{change?.SettingKey ?? changeId.ToString()}\n\n" +
-            "La medición durará 30 s y se comparará contra la línea base.\n\n" +
+            (change?.Target == WindowsOptimizationTarget.StartupApp
+                ? "Reiniciá Windows y reproducí la misma carga que en la línea base. " +
+                  "La captura durará 30 s y comparará métricas generales; EVO no " +
+                  "mide el tiempo de arranque por aplicación.\n\n"
+                : "La medición durará 30 s y se comparará contra la línea base.\n\n") +
             "Si EVO detecta una regresión o un intercambio perjudicial, " +
             "revertirá el cambio automáticamente. Si falta evidencia, el " +
             "resultado quedará INCONCLUSO y no se conservará como mejora.";

@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using EvoOptimizer.Core.Audit;
 using EvoOptimizer.Core.Diagnosis;
+using EvoOptimizer.Core.Hardware;
 using EvoOptimizer.Core.Optimization;
 using EvoOptimizer.Infrastructure.Audit;
 using EvoOptimizer.Infrastructure.Optimization;
@@ -30,6 +31,7 @@ public sealed partial class EvoControlCenterViewModel
     private WindowsSystemAuditor? _auditor;
     private AdaptiveDiagnosticEngine? _diagnosticEngine;
     private ProcessGovernanceService? _governance;
+    private readonly MemoryPressureEvaluator _memoryPressureEvaluator = new();
     private HardwareDiagnosticSnapshot? _hardwareSnapshot;
     private CancellationTokenSource? _hubCancellation;
     private bool _hubStarted;
@@ -57,6 +59,8 @@ public sealed partial class EvoControlCenterViewModel
         "EVO AI todavía no tiene evidencia. No se declara ninguna mejora.";
     private string _catalogStatusText =
         "El catálogo se genera con el estado real de Windows y de los motores.";
+    private string _memoryPressureStatusText =
+        "Presión de memoria: sin muestras en vivo.";
     private bool _isRefreshingCatalog;
     private bool _isRefreshingDiagnostics;
 
@@ -81,6 +85,12 @@ public sealed partial class EvoControlCenterViewModel
     public ObservableCollection<GovernedProcess> GovernedProcesses { get; } = new();
 
     public ObservableCollection<string> CatalogCategories { get; } = new();
+
+    public string MemoryPressureStatusText
+    {
+        get => _memoryPressureStatusText;
+        private set => SetField(ref _memoryPressureStatusText, value);
+    }
 
     // ── Propiedades del catálogo ─────────────────────────────────────────────
 
@@ -226,7 +236,13 @@ public sealed partial class EvoControlCenterViewModel
             {
                 RollbackPriority();
                 RollbackAffinity();
-                _autoProfileAppliedByHub = false;
+                _autoProfileAppliedByHub = HasActiveOptimizations;
+                if (_autoProfileAppliedByHub)
+                {
+                    AutoGameProfileStatusText =
+                        "Perfil automático desactivado; quedó un rollback pendiente. " +
+                        $"{PriorityStatusText} {AffinityStatusText}";
+                }
             }
 
             _ = RefreshCatalogAsync();
@@ -327,12 +343,20 @@ public sealed partial class EvoControlCenterViewModel
             var snapshot = HardwareEvidenceEvaluator.Evaluate(report);
             var diagnostic = DiagnosticEngine.Analyze(report);
 
+            // Topología P/E real vía Win32 (solo lectura). Se remide en cada
+            // ciclo para que la fecha de medición acompañe al dato; no se
+            // infiere de la cantidad de núcleos informada por CIM.
+            var topology = await Task.Run(
+                () => _topologyProvider.DiscoverTopology(),
+                cancellationToken);
+            var topologyMeasuredAt = DateTimeOffset.Now;
+
             await _dispatcher.InvokeAsync(() =>
             {
                 _hardwareSnapshot = snapshot;
                 _lastDiagnosticAt = report.CapturedAt;
 
-                FillHardwareRows(snapshot);
+                FillHardwareRows(snapshot, topology, topologyMeasuredAt);
 
                 DiagnosticFindings.Clear();
                 foreach (var finding in diagnostic.Findings
@@ -369,7 +393,10 @@ public sealed partial class EvoControlCenterViewModel
         }
     }
 
-    private void FillHardwareRows(HardwareDiagnosticSnapshot snapshot)
+    private void FillHardwareRows(
+        HardwareDiagnosticSnapshot snapshot,
+        CpuTopologyInfo topology,
+        DateTimeOffset topologyMeasuredAt)
     {
         HardwareFactRows.Clear();
 
@@ -416,6 +443,62 @@ public sealed partial class EvoControlCenterViewModel
             "Requiere RAPL/PDH · no disponible",
             cpu.PowerConfidence.ToString(),
             stamp));
+
+        string topologyStamp = topologyMeasuredAt.ToString("yyyy-MM-dd HH:mm");
+        HardwareFactRows.Add(new(
+            "CPU",
+            "Topología P/E (núcleos híbridos)",
+            DescribeTopology(topology),
+            "Win32 GetLogicalProcessorInformationEx (solo lectura)",
+            topology.IsTopologyReliable ? "High" : "Unknown",
+            topologyStamp));
+
+        if (snapshot.Graphics.Count == 0)
+        {
+            HardwareFactRows.Add(new(
+                "GPU",
+                "Adaptador gráfico",
+                "UNKNOWN (la consulta no devolvió datos)",
+                source,
+                "Unknown",
+                stamp));
+        }
+
+        foreach (var gpu in snapshot.Graphics)
+        {
+            string label = gpu.Name ?? $"GPU {gpu.Index + 1}";
+
+            HardwareFactRows.Add(new(
+                "GPU",
+                label,
+                $"{gpu.AdapterCompatibility ?? "UNKNOWN"} · " +
+                $"{gpu.VideoProcessor ?? "UNKNOWN"} · Estado: {gpu.Status ?? "UNKNOWN"}",
+                source,
+                gpu.Name is null ? "Unknown" : "High",
+                stamp));
+
+            HardwareFactRows.Add(new(
+                "GPU",
+                $"{label} · driver",
+                gpu.HasDriverEvidence
+                    ? $"Versión: {gpu.DriverVersion ?? "UNKNOWN"} · Fecha: {gpu.DriverDate ?? "UNKNOWN"}"
+                    : "UNKNOWN (Windows no informó versión ni fecha)",
+                source,
+                gpu.HasDriverEvidence ? "High" : "Unknown",
+                stamp));
+
+            if (gpu.HorizontalResolution is > 0 && gpu.VerticalResolution is > 0)
+            {
+                HardwareFactRows.Add(new(
+                    "GPU",
+                    $"{label} · modo actual",
+                    $"{gpu.HorizontalResolution}×{gpu.VerticalResolution} · " +
+                    $"{(gpu.RefreshRateHz is > 0 ? $"{gpu.RefreshRateHz} Hz" : "Hz UNKNOWN")}",
+                    source,
+                    "Medium",
+                    stamp));
+            }
+        }
 
         var memory = snapshot.Memory;
         HardwareFactRows.Add(new(
@@ -513,9 +596,34 @@ public sealed partial class EvoControlCenterViewModel
             "SERVICIOS",
             "Servicios automáticos detenidos",
             $"{snapshot.Services.StoppedAutoStartCount} de {snapshot.Services.AutoStartCount}",
-            "Get-Service (StartMode=Auto)",
+            "WindowsSystemAuditor · Win32_Service",
             "High",
             stamp));
+
+        IReadOnlyList<WindowsServiceEvidence> serviceInventory =
+            snapshot.Services.Inventory ?? Array.Empty<WindowsServiceEvidence>();
+
+        HardwareFactRows.Add(new(
+            "SERVICIOS",
+            "Inventario consultado",
+            $"{serviceInventory.Count} servicios",
+            "WindowsSystemAuditor · Win32_Service",
+            serviceInventory.Count == 0 ? "Unknown" : "High",
+            stamp));
+
+        foreach (WindowsServiceEvidence service in serviceInventory)
+        {
+            HardwareFactRows.Add(new(
+                "SERVICIOS",
+                service.DisplayName,
+                $"{service.Name} · Estado: {service.State} · Inicio: {service.StartMode} · " +
+                $"PID: {(service.ProcessId is > 0 ? service.ProcessId.Value.ToString() : "N/D")}",
+                "WindowsSystemAuditor · Win32_Service",
+                service.State == "UNKNOWN" || service.StartMode == "UNKNOWN"
+                    ? "Low"
+                    : "High",
+                stamp));
+        }
 
         HardwareFactRows.Add(new(
             "INICIO",
@@ -526,6 +634,19 @@ public sealed partial class EvoControlCenterViewModel
             "Win32_StartupCommand",
             snapshot.Startup.Names.Count == 0 ? "Unknown" : "High",
             stamp));
+    }
+
+    private static string DescribeTopology(CpuTopologyInfo topology)
+    {
+        if (!topology.IsTopologyReliable)
+            return "UNKNOWN (topología no verificable)";
+
+        if (!topology.IsHybrid)
+            return $"Estándar: {topology.TotalPhysicalCores} núcleos / " +
+                   $"{topology.LogicalProcessors} hilos (sin clases P/E)";
+
+        return $"{topology.PerformanceCores} P-Cores ({topology.PerformanceLogicalProcessors} hilos) + " +
+               $"{topology.EfficientCores} E-Cores ({topology.EfficientLogicalProcessors} hilos)";
     }
 
     private static string BuildDiagnosticSummary(
@@ -628,8 +749,22 @@ public sealed partial class EvoControlCenterViewModel
             CpuTemperatureCelsius: null,
             GpuTemperatureCelsius: null,
             FreeSystemDrivePercent: null,
-            HighMemoryPressure: (latest?.MemoryUsagePercent ?? 0) > 88);
+            HighMemoryPressure: latest is not null &&
+                _memoryPressureEvaluator.Evaluate(new MemoryPressureEvidence(
+                    MegabytesToBytes(latest.TotalMemoryMb),
+                    MegabytesToBytes(latest.AvailableMemoryMb),
+                    MegabytesToBytes(latest.CommitUsedMb),
+                    MegabytesToBytes(latest.CommitLimitMb),
+                    SystemHardFaultsPerSecond: null)).Level is
+                    MemoryPressureLevel.High or MemoryPressureLevel.Critical);
     }
+
+    private static long? MegabytesToBytes(double megabytes) =>
+        double.IsFinite(megabytes) &&
+        megabytes >= 0 &&
+        megabytes <= long.MaxValue / (1024d * 1024d)
+            ? (long)(megabytes * 1024d * 1024d)
+            : null;
 
     private void RebuildCatalogView()
     {
@@ -980,6 +1115,7 @@ public sealed partial class EvoControlCenterViewModel
     {
         UpdateEvoPerformanceScore();
         _ = RefreshGovernanceAsync();
+        UpdateMemoryPressureStatus(snapshot);
 
         bool cs2Running = snapshot.Cs2ProcessCount > 0;
 
@@ -989,9 +1125,10 @@ public sealed partial class EvoControlCenterViewModel
             {
                 RollbackPriority();
                 RollbackAffinity();
-                _autoProfileAppliedByHub = false;
-                AutoGameProfileStatusText =
-                    "CS2 finalizó: optimizaciones temporales revertidas.";
+                _autoProfileAppliedByHub = HasActiveOptimizations;
+                AutoGameProfileStatusText = _autoProfileAppliedByHub
+                    ? $"CS2 finalizó; rollback pendiente. {PriorityStatusText} {AffinityStatusText}"
+                    : "CS2 finalizó; no quedan cambios temporales de EVO pendientes.";
             }
 
             return;
@@ -1000,26 +1137,48 @@ public sealed partial class EvoControlCenterViewModel
         if (cs2Running && _activePriorityToken is null)
         {
             ApplyAboveNormalPriority();
-            _autoProfileAppliedByHub = true;
-            AutoGameProfileStatusText =
-                "CS2 detectado: prioridad AboveNormal aplicada automáticamente " +
-                "(autorización del perfil).";
         }
 
         if (cs2Running && Topology.IsHybrid && _activeAffinityToken is null)
         {
             ApplyPcoresAffinity();
-            _autoProfileAppliedByHub = true;
+        }
+
+        if (cs2Running)
+        {
+            _autoProfileAppliedByHub = HasActiveOptimizations;
+            AutoGameProfileStatusText = HasActiveOptimizations
+                ? "CS2 detectado: cambio(s) temporal(es) aplicado(s) con la autorización del perfil."
+                : "Perfil automático activo, pero no se aplicó ningún cambio de EVO. " +
+                  $"{PriorityStatusText} {AffinityStatusText}";
         }
 
         if (!cs2Running && _autoProfileAppliedByHub)
         {
             RollbackPriority();
             RollbackAffinity();
-            _autoProfileAppliedByHub = false;
-            AutoGameProfileStatusText =
-                "CS2 finalizó: prioridad y afinidad restauradas.";
+            _autoProfileAppliedByHub = HasActiveOptimizations;
+            AutoGameProfileStatusText = _autoProfileAppliedByHub
+                ? $"CS2 finalizó; rollback pendiente. {PriorityStatusText} {AffinityStatusText}"
+                : "CS2 finalizó; no quedan cambios temporales de EVO pendientes.";
         }
+    }
+
+    private void UpdateMemoryPressureStatus(LivePerformanceSnapshot snapshot)
+    {
+        MemoryPressureResult pressure = _memoryPressureEvaluator.Evaluate(
+            new MemoryPressureEvidence(
+                MegabytesToBytes(snapshot.TotalMemoryMb),
+                MegabytesToBytes(snapshot.AvailableMemoryMb),
+                MegabytesToBytes(snapshot.CommitUsedMb),
+                MegabytesToBytes(snapshot.CommitLimitMb),
+                SystemHardFaultsPerSecond: null));
+
+        MemoryPressureStatusText = pressure.HasSufficientEvidence
+            ? $"Presión {pressure.Level} · RAM {pressure.PhysicalMemoryUsedPercent:F1}% · " +
+              $"commit {(pressure.CommitUsedPercent.HasValue ? $"{pressure.CommitUsedPercent:F1}%" : "N/D")}. " +
+              "Hard faults no medidos."
+            : "Presión de memoria: UNKNOWN (faltan datos válidos de RAM y commit).";
     }
 
     // ── Formato ──────────────────────────────────────────────────────────────

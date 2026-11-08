@@ -1,5 +1,8 @@
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
+using System.Windows.Input;
+using System.Windows.Media;
 using EvoOptimizer.App.ViewModels;
 
 namespace EvoOptimizer.App.Views;
@@ -16,6 +19,10 @@ public partial class EvoTweakPanel : UserControl
     }
 
     private EvoControlCenterViewModel? ViewModel => DataContext as EvoControlCenterViewModel;
+
+    public void SelectScannerTab() => TweakSections.SelectedIndex = 0;
+    public void SelectTweaksTab() => TweakSections.SelectedIndex = 1;
+    public void SelectDebloatTab() => TweakSections.SelectedIndex = 2;
 
     // ── SCANNER ──────────────────────────────────────────────────────────────
 
@@ -78,6 +85,103 @@ public partial class EvoTweakPanel : UserControl
         }
 
         Info(await ViewModel.ApplyTweakAsync(row.Id), "Resultado del tweak");
+    }
+
+    private async void TweakToggle_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not ToggleButton toggle || toggle.DataContext is not TweakRow row || ViewModel is null)
+            return;
+
+        bool apply = !row.IsApplied;
+        if (apply && !row.CanApply)
+        {
+            toggle.IsChecked = false;
+            return;
+        }
+
+        if (!apply && !row.CanRollback)
+        {
+            toggle.IsChecked = true;
+            return;
+        }
+
+        string prompt = apply
+            ? $"TWEAK: {row.Name}\n\nQué hace: {row.Description}\n" +
+              $"Ubicación: {row.RegistryLocation}\nValor actual: {row.CurrentValueLabel}\n" +
+              $"{row.DesiredLabel}\nBeneficio: {row.Benefit}\n" +
+              $"Riesgo: {row.RiskLabel} · {row.ElevationLabel} · {row.RebootLabel}\n\n" +
+              "EVO registra el valor original, verifica la escritura y restaura el estado previo si falla.\n\n" +
+              "¿Aplicar este tweak?"
+            : $"¿Revertir «{row.Name}» al valor original registrado por EVO?\n" +
+              $"Ubicación: {row.RegistryLocation}";
+
+        if (!Confirm(prompt, apply ? "Aplicar tweak" : "Revertir tweak"))
+        {
+            toggle.IsChecked = row.IsApplied;
+            return;
+        }
+
+        toggle.ClearValue(UIElement.IsEnabledProperty);
+        toggle.IsEnabled = false;
+        try
+        {
+            string result = apply
+                ? await ViewModel.ApplyTweakAsync(row.Id)
+                : await ViewModel.RollbackTweakAsync(row.Id);
+            Info(result, "Resultado del tweak");
+        }
+        finally
+        {
+            toggle.ClearValue(UIElement.IsEnabledProperty);
+        }
+    }
+
+    private void TweakDetails_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement { DataContext: TweakRow row })
+            return;
+
+        ShowTweakDetails(row);
+    }
+
+    private void TweakRow_PreviewMouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not FrameworkElement { DataContext: TweakRow row } card)
+            return;
+
+        DependencyObject? source = e.OriginalSource as DependencyObject;
+        while (source is not null && !ReferenceEquals(source, card))
+        {
+            if (source is ToggleButton ||
+                source is Button { ContextMenu: not null })
+            {
+                return;
+            }
+
+            source = VisualTreeHelper.GetParent(source);
+        }
+
+        ShowTweakDetails(row);
+    }
+
+    private void ShowTweakDetails(TweakRow row)
+    {
+        if (TweakCatalogPage.ContextualSidePanelContent is FrameworkElement details)
+            details.DataContext = row;
+
+        TweakCatalogPage.IsContextualSidePanelOpen = true;
+    }
+
+    private void TweakDetailsClose_Click(object sender, RoutedEventArgs e) =>
+        TweakCatalogPage.IsContextualSidePanelOpen = false;
+
+    private void TweakMenu_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { ContextMenu: { } menu } button)
+            return;
+
+        menu.PlacementTarget = button;
+        menu.IsOpen = true;
     }
 
     private async void TweakRollback_Click(object sender, RoutedEventArgs e)

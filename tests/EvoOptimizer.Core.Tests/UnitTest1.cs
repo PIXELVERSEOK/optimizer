@@ -642,16 +642,15 @@ public class Cs2ExperimentOrchestratorTests
     }
 
     [Fact]
-    public void Compare_IntelUhdBound_RecognizesGpuBottleneckDominant()
+    public void Compare_HighGpuUsage_ReportsGpuUsageObservation()
     {
-        // GPU al 97% tanto en baseline como candidate
         var baseline = MakeMetrics("Config A (Stock)", avgFps: 62.0, oneLow: 38.0, p99Ms: 26.0, gpuUsage: 97.0);
         var candidate = MakeMetrics("Config B (Priority)", avgFps: 62.5, oneLow: 39.0, p99Ms: 25.5, gpuUsage: 97.0);
 
         var comparison = _orchestrator.Compare(baseline, candidate);
 
         Assert.Equal(EvoOptimizer.Infrastructure.Benchmark.ExperimentVerdict.GpuBottleneckDominant, comparison.Verdict);
-        Assert.Contains(comparison.EvidentiaryNotes, n => n.Contains("Intel UHD"));
+        Assert.Contains(comparison.EvidentiaryNotes, n => n.Contains("Uso de GPU"));
     }
 }
 
@@ -663,8 +662,12 @@ public class WindowsOptimizationPlannerTests
         bool historicalCapture = false,
         string powerPlan = "Equilibrado",
         bool balanced = true,
-        int startupCount = 2) =>
-        new(gameMode, gameDvr, historicalCapture, powerPlan, balanced, startupCount);
+        int startupCount = 2,
+        bool? acPower = true,
+        bool hasHighPerformancePlan = true) =>
+        new(gameMode, gameDvr, historicalCapture, powerPlan, balanced, startupCount,
+            IsOnAcPower: acPower,
+            HasHighPerformancePlan: hasHighPerformancePlan);
 
     [Fact]
     public void Build_ReturnsSevenItemsInPriorityOrder()
@@ -780,13 +783,53 @@ public class WindowsOptimizationPlannerTests
     public void Build_BalancedPlan_ProposesHighPerformanceWithMediumRisk()
     {
         var item = WindowsOptimizationPlanner
-            .Build(MakeSnapshot(powerPlan: "Equilibrado", balanced: true))
+            .Build(MakeSnapshot(powerPlan: "Equilibrado", balanced: true,
+                acPower: true, hasHighPerformancePlan: true))
             .Single(x => x.Target == WindowsOptimizationTarget.PowerPlan);
 
         Assert.True(item.CanApply);
         Assert.Equal(WindowsOptimizationRisk.Medium, item.RiskLevel);
         Assert.Contains("Alto rendimiento", item.ProposedState);
         Assert.Equal("Riesgo medio", item.RiskLabel);
+    }
+
+    [Fact]
+    public void Build_BalancedPlanOnBattery_IsBlockedForAcSafety()
+    {
+        var item = WindowsOptimizationPlanner
+            .Build(MakeSnapshot(powerPlan: "Equilibrado", balanced: true,
+                acPower: false, hasHighPerformancePlan: true))
+            .Single(x => x.Target == WindowsOptimizationTarget.PowerPlan);
+
+        Assert.False(item.CanApply);
+        Assert.NotNull(item.BlockedReason);
+        Assert.Contains("AC", item.BlockedReason, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Build_BalancedPlanWithUnknownPowerSource_IsBlocked()
+    {
+        var item = WindowsOptimizationPlanner
+            .Build(MakeSnapshot(powerPlan: "Equilibrado", balanced: true,
+                acPower: null, hasHighPerformancePlan: true))
+            .Single(x => x.Target == WindowsOptimizationTarget.PowerPlan);
+
+        Assert.False(item.CanApply);
+        Assert.NotNull(item.BlockedReason);
+    }
+
+    [Fact]
+    public void Build_BalancedPlanWithoutHighPerformancePlan_IsBlocked()
+    {
+        var item = WindowsOptimizationPlanner
+            .Build(MakeSnapshot(powerPlan: "Equilibrado", balanced: true,
+                acPower: true, hasHighPerformancePlan: false))
+            .Single(x => x.Target == WindowsOptimizationTarget.PowerPlan);
+
+        Assert.False(item.CanApply);
+        Assert.NotNull(item.BlockedReason);
+        Assert.Contains("Alto rendimiento", item.BlockedReason,
+            StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -985,14 +1028,18 @@ public class WindowsChangeJournalTests
             await journal.AppendAsync(MakeChange(
                 WindowsOptimizationTarget.GameMode,
                 WindowsOptimizationStatus.Pending));
+            await journal.AppendAsync(MakeChange(
+                WindowsOptimizationTarget.GameDvr,
+                WindowsOptimizationStatus.RollbackFailed));
 
             var active = await journal.GetActiveAsync();
 
-            Assert.Equal(3, active.Count);
+            Assert.Equal(4, active.Count);
             Assert.All(active, x => Assert.True(
                 x.Status is WindowsOptimizationStatus.Pending
                     or WindowsOptimizationStatus.Applied
-                    or WindowsOptimizationStatus.Verified));
+                    or WindowsOptimizationStatus.Verified
+                    or WindowsOptimizationStatus.RollbackFailed));
         }
         finally
         {
@@ -1007,6 +1054,35 @@ public class WindowsChangeJournalTests
 public class OptimizationEvidenceEvaluatorTests
 {
     private readonly OptimizationEvidenceEvaluator _evaluator = new();
+
+    [Fact]
+    public void StartupBootSessionGuard_RequiresDifferentBootSession()
+    {
+        string baseline = new DateTimeOffset(2026, 11, 7, 10, 0, 0, TimeSpan.Zero)
+            .ToString("O");
+        string sameSession = new DateTimeOffset(2026, 11, 7, 10, 0, 2, TimeSpan.Zero)
+            .ToString("O");
+        string afterReboot = new DateTimeOffset(2026, 11, 7, 12, 0, 0, TimeSpan.Zero)
+            .ToString("O");
+
+        Assert.False(StartupBootSessionGuard.HasRebooted(baseline, sameSession));
+        Assert.True(StartupBootSessionGuard.HasRebooted(baseline, afterReboot));
+        Assert.False(StartupBootSessionGuard.HasRebooted(null, afterReboot));
+        Assert.Equal(
+            "NO VERIFICABLE",
+            new OptimizationEvidenceResult(
+                Guid.NewGuid(),
+                "startup:example",
+                "Example",
+                OptimizationEvidenceVerdict.NotVerifiable,
+                false,
+                false,
+                false,
+                Array.Empty<OptimizationMetricComparison>(),
+                Array.Empty<string>(),
+                Array.Empty<string>(),
+                DateTimeOffset.UtcNow).VerdictLabel);
+    }
 
     [Fact]
     public void Evaluate_ImprovementWithoutRegressions_KeepsChange()
@@ -1027,7 +1103,7 @@ public class OptimizationEvidenceEvaluatorTests
         Assert.True(result.ShouldKeep);
         Assert.False(result.ShouldRollback);
         Assert.False(result.RequiresUserDecision);
-        Assert.True(result.Metrics.Any(x => x.IsPrimary && x.IsImprovement));
+        Assert.Contains(result.Metrics, x => x.IsPrimary && x.IsImprovement);
     }
 
     [Fact]
@@ -1169,6 +1245,52 @@ public class OptimizationEvidenceEvaluatorTests
     }
 
     [Fact]
+    public void Evaluate_DifferentOptimization_IsInsufficientData()
+    {
+        var baseline = Measurement(
+            OptimizationModificationKind.Windows,
+            Fps(100, 80, 60, 12, 16, 2));
+        var candidate = Measurement(
+            OptimizationModificationKind.Windows,
+            Fps(120, 95, 75, 10, 13, 1),
+            modificationKey: "windows:GameDvr");
+
+        var result = _evaluator.Evaluate(baseline, candidate);
+
+        Assert.Equal(
+            OptimizationEvidenceVerdict.InsufficientData,
+            result.Verdict);
+        Assert.False(result.ShouldKeep);
+        Assert.False(result.ShouldRollback);
+        Assert.Contains(result.Warnings, warning =>
+            warning.Contains("misma optimización", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void Evaluate_CandidateCapturedBeforeBaseline_IsInsufficientData()
+    {
+        var baseline = Measurement(
+            OptimizationModificationKind.Windows,
+            Fps(100, 80, 60, 12, 16, 2));
+        var candidate = Measurement(
+            OptimizationModificationKind.Windows,
+            Fps(120, 95, 75, 10, 13, 1)) with
+        {
+            CapturedAt = baseline.CapturedAt.AddSeconds(-1)
+        };
+
+        var result = _evaluator.Evaluate(baseline, candidate);
+
+        Assert.Equal(
+            OptimizationEvidenceVerdict.InsufficientData,
+            result.Verdict);
+        Assert.False(result.ShouldKeep);
+        Assert.False(result.ShouldRollback);
+        Assert.Contains(result.Warnings, warning =>
+            warning.Contains("después de la línea base", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
     public void Evaluate_TooFewSamples_IsInsufficientData()
     {
         var baseline = Measurement(
@@ -1243,11 +1365,12 @@ public class OptimizationEvidenceEvaluatorTests
         OptimizationMetricValues metrics,
         string scenario = "WindowsOptimization",
         string hardwareId = "hw-test",
-        string environmentId = "env-test")
+        string environmentId = "env-test",
+        string modificationKey = "windows:GameMode")
     {
         var context = new OptimizationMeasurementContext(
-            Guid.NewGuid(),
-            "windows:GameMode",
+            Guid.Parse("a86e724e-9dcf-4f3d-af44-3d8e6383818c"),
+            modificationKey,
             "Modo Juego",
             kind,
             "cs2",

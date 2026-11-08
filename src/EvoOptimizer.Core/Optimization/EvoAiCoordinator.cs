@@ -56,6 +56,7 @@ public static class EvoAiCoordinator
                 : "Priorizar optimizaciones de la categoría dominante."));
 
         AddMemoryDecision(input, decisions, conflicts, warnings);
+        AddGraphicsDecision(input, decisions, warnings);
         AddStorageDecision(input, decisions, warnings);
         AddGamingDecision(input, decisions, warnings);
         AddOutcomeDecision(input, decisions, conflicts);
@@ -167,6 +168,47 @@ public static class EvoAiCoordinator
         {
             foreach (string warning in memory.Warnings.Take(3))
                 warnings.Add(warning);
+        }
+    }
+
+    private static void AddGraphicsDecision(
+        EvoAiInput input,
+        List<EvoAiDecision> decisions,
+        List<string> warnings)
+    {
+        var hardware = input.Hardware;
+
+        if (hardware is null || hardware.Graphics.Count == 0)
+        {
+            warnings.Add("GPU UNKNOWN: no se pudo identificar el adaptador gráfico " +
+                         "ni su driver; no se recomiendan ajustes gráficos sin esa evidencia.");
+            return;
+        }
+
+        var device = hardware.Graphics[0];
+
+        string driverText = device.HasDriverEvidence
+            ? $"Driver instalado: {device.DriverVersion ?? "UNKNOWN"} " +
+              $"({device.DriverDate ?? "fecha UNKNOWN"})."
+            : "Windows no informó versión ni fecha del driver: queda UNKNOWN.";
+
+        decisions.Add(new EvoAiDecision(
+            "GPU y driver",
+            $"{device.Name ?? "Adaptador UNKNOWN"} ({device.AdapterCompatibility ?? "fabricante UNKNOWN"}). " +
+            driverText + " EVO no declara el driver como antiguo ni recomienda una " +
+            "actualización sin una fuente de referencia verificada.",
+            $"Origen: Win32_VideoController (CIM, solo lectura). " +
+            $"Estado: {device.Status ?? "UNKNOWN"}.",
+            device.HasDriverEvidence ? "Medium" : "UNKNOWN",
+            "Medir carga y frametimes antes de cambiar ajustes gráficos; no tocar el driver sin evidencia."));
+
+        foreach (var other in hardware.Graphics.Skip(1))
+        {
+            if (!other.HasDriverEvidence)
+            {
+                warnings.Add($"Adaptador adicional '{other.Name ?? "UNKNOWN"}' sin " +
+                             "evidencia de driver; su estado queda UNKNOWN.");
+            }
         }
     }
 

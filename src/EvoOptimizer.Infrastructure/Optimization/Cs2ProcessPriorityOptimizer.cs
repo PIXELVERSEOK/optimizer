@@ -42,9 +42,20 @@ public sealed class Cs2ProcessPriorityOptimizer
     private readonly ConcurrentDictionary<Guid, PriorityOptimizationToken>
         _activeChanges = new();
 
-    public PriorityOptimizationResult Apply()
+    /// <summary>
+    /// Aplica AboveNormal al proceso indicado. Sin nombre usa CS2 (comportamiento
+    /// histórico). El motor de tokens/rollback es el mismo para cualquier juego.
+    /// </summary>
+    public PriorityOptimizationResult Apply(string? processName = null)
     {
-        Process[] processes = Process.GetProcessesByName(TargetProcessName);
+        string target = string.IsNullOrWhiteSpace(processName)
+            ? TargetProcessName
+            : processName.Trim();
+        string display = target.Equals(TargetProcessName, StringComparison.OrdinalIgnoreCase)
+            ? "CS2"
+            : target;
+
+        Process[] processes = Process.GetProcessesByName(target);
 
         try
         {
@@ -52,14 +63,14 @@ public sealed class Cs2ProcessPriorityOptimizer
             {
                 return new(
                     PriorityOptimizationStatus.ProcessNotFound,
-                    "CS2 no está ejecutándose.");
+                    $"{display} no está ejecutándose.");
             }
 
             if (processes.Length != 1)
             {
                 return new(
                     PriorityOptimizationStatus.AmbiguousProcess,
-                    "Se detectaron varias instancias de CS2. No se modificó ninguna.");
+                    $"Se detectaron varias instancias de {display}. No se modificó ninguna.");
             }
 
             using Process process = processes[0];
@@ -68,7 +79,7 @@ public sealed class Cs2ProcessPriorityOptimizer
             {
                 return new(
                     PriorityOptimizationStatus.ProcessNotFound,
-                    "CS2 terminó antes de aplicar la optimización.");
+                    $"{display} terminó antes de aplicar la optimización.");
             }
 
             long startTicks = process.StartTime.ToUniversalTime().Ticks;
@@ -78,7 +89,7 @@ public sealed class Cs2ProcessPriorityOptimizer
             {
                 return new(
                     PriorityOptimizationStatus.AlreadyApplied,
-                    "CS2 ya utiliza AboveNormal. No se realizó otro cambio.");
+                    $"{display} ya utiliza AboveNormal. No se realizó otro cambio.");
             }
 
             process.PriorityClass = TargetPriority;
@@ -136,7 +147,7 @@ public sealed class Cs2ProcessPriorityOptimizer
             {
                 return new(
                     PriorityOptimizationStatus.IdentityMismatch,
-                    "La identidad de CS2 cambió. Se rechazó el rollback.");
+                    "La identidad del proceso cambió. Se rechazó el rollback.");
             }
 
             if (process.PriorityClass != token.AppliedPriority)
@@ -159,7 +170,7 @@ public sealed class Cs2ProcessPriorityOptimizer
         {
             return new(
                 PriorityOptimizationStatus.IdentityMismatch,
-                "El proceso CS2 ya no existe.");
+                "El proceso optimizado ya no existe.");
         }
         catch (System.ComponentModel.Win32Exception ex)
         {

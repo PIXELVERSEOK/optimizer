@@ -1,0 +1,211 @@
+<UserControl x:Class="EvoOptimizer.App.Views.EvoSystemCleanerPanel"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:viewModels="clr-namespace:EvoOptimizer.App.ViewModels"
+             Background="{StaticResource BgBrush}">
+    <UserControl.Resources>
+        <BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter"/>
+        <Style TargetType="DataGrid">
+            <Setter Property="Background" Value="{StaticResource BgBrush}"/>
+            <Setter Property="RowBackground" Value="{StaticResource PanelBrush}"/>
+            <Setter Property="AlternatingRowBackground" Value="{StaticResource PanelAltBrush}"/>
+            <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
+            <Setter Property="BorderBrush" Value="{StaticResource LineBrush}"/>
+            <Setter Property="GridLinesVisibility" Value="Horizontal"/>
+            <Setter Property="HorizontalGridLinesBrush" Value="{StaticResource LineBrush}"/>
+            <Setter Property="RowHeaderWidth" Value="0"/>
+            <Setter Property="HeadersVisibility" Value="Column"/>
+            <Setter Property="AutoGenerateColumns" Value="False"/>
+            <Setter Property="CanUserAddRows" Value="False"/>
+            <Setter Property="CanUserDeleteRows" Value="False"/>
+            <Setter Property="IsReadOnly" Value="True"/>
+            <Setter Property="ColumnHeaderHeight" Value="32"/>
+            <Setter Property="FontSize" Value="11"/>
+        </Style>
+        <Style TargetType="DataGridColumnHeader">
+            <Setter Property="Background" Value="{StaticResource PanelAltBrush}"/>
+            <Setter Property="Foreground" Value="{StaticResource AccentBrush}"/>
+            <Setter Property="FontWeight" Value="Bold"/>
+            <Setter Property="Padding" Value="8,6"/>
+            <Setter Property="BorderBrush" Value="{StaticResource LineBrush}"/>
+        </Style>
+        <Style TargetType="TextBlock">
+            <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
+            <Setter Property="TextWrapping" Value="Wrap"/>
+        </Style>
+        <Style x:Key="MetricCard" TargetType="Border" BasedOn="{StaticResource PanelStyle}">
+            <Setter Property="Padding" Value="12"/>
+            <Setter Property="Margin" Value="4"/>
+        </Style>
+    </UserControl.Resources>
+
+    <Grid Margin="18,14">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <Grid Grid.Row="0" Margin="4,0,4,10">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <StackPanel>
+                <TextBlock Text="LIMPIEZA AVANZADA DEL SISTEMA"
+                           FontSize="21" FontWeight="Bold"/>
+                <TextBlock Text="Análisis real, selección por categoría y registro verificable; nunca modifica el registro de Windows."
+                           Style="{StaticResource DimText}" Margin="0,3,0,0"/>
+            </StackPanel>
+            <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                <TextBlock Text="ANTIGÜEDAD MÍNIMA"
+                           FontSize="9" FontWeight="Bold"
+                           Foreground="{StaticResource DimBrush}"
+                           VerticalAlignment="Center" Margin="0,0,8,0"/>
+                <ComboBox Width="150"
+                          ItemsSource="{x:Static viewModels:AdvancedSystemCleanupViewModel.RetentionOptions}"
+                          SelectedItem="{Binding SelectedRetention}"
+                          DisplayMemberPath="Label"
+                          IsEnabled="{Binding IsIdle}"/>
+            </StackPanel>
+        </Grid>
+
+        <TextBlock Grid.Row="1" Text="{Binding StatusText}"
+                   Style="{StaticResource DimText}" Margin="5,0,5,8"/>
+
+        <UniformGrid Grid.Row="2" Columns="4" Margin="-4,0,-4,5">
+            <Border Style="{StaticResource MetricCard}">
+                <StackPanel>
+                    <TextBlock Text="ARCHIVOS ANALIZADOS" Style="{StaticResource SectionTitle}"/>
+                    <TextBlock Text="{Binding ScannedFileCount, StringFormat={}{0:N0}}"
+                               FontSize="21" FontWeight="Bold"/>
+                    <TextBlock Text="{Binding ScannedBytesText, StringFormat=Espacio revisado: {0}}"
+                               Style="{StaticResource DimText}"/>
+                </StackPanel>
+            </Border>
+            <Border Style="{StaticResource MetricCard}">
+                <StackPanel>
+                    <TextBlock Text="SELECCIONADOS" Style="{StaticResource SectionTitle}"/>
+                    <TextBlock Text="{Binding SelectedFileCount, StringFormat={}{0:N0}}"
+                               FontSize="21" FontWeight="Bold"/>
+                    <TextBlock Text="Archivos que cumplen la antigüedad"
+                               Style="{StaticResource DimText}"/>
+                </StackPanel>
+            </Border>
+            <Border Style="{StaticResource MetricCard}">
+                <StackPanel>
+                    <TextBlock Text="RECUPERABLE ESTIMADO" Style="{StaticResource SectionTitle}"/>
+                    <TextBlock Text="{Binding SelectedEstimatedBytesText}"
+                               FontSize="21" FontWeight="Bold"
+                               Foreground="{StaticResource AccentBrush}"/>
+                    <TextBlock Text="El espacio real se informa tras cada eliminación confirmada por Windows."
+                               Style="{StaticResource DimText}"/>
+                </StackPanel>
+            </Border>
+            <Border Style="{StaticResource MetricCard}">
+                <StackPanel>
+                    <TextBlock Text="RESULTADO ÚLTIMA OPERACIÓN" Style="{StaticResource SectionTitle}"/>
+                    <TextBlock Text="{Binding OperationSummary}" Style="{StaticResource DimText}"/>
+                </StackPanel>
+            </Border>
+        </UniformGrid>
+
+        <Grid Grid.Row="3">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="190"/>
+            </Grid.RowDefinitions>
+
+            <DockPanel Grid.Row="0" Margin="4,4,4,7">
+                <TextBlock Text="CATEGORÍAS Y UBICACIONES DETECTADAS"
+                           Style="{StaticResource SectionTitle}"
+                           VerticalAlignment="Center"/>
+                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                    <Button Content="ANALIZAR SISTEMA"
+                            Click="Analyze_Click"
+                            IsEnabled="{Binding IsIdle}"/>
+                    <Button Content="LIMPIAR SELECCIONADOS"
+                            Background="#7E363C"
+                            Click="Clean_Click"
+                            IsEnabled="{Binding CanClean}"/>
+                    <Button Content="CANCELAR"
+                            Click="Cancel_Click"
+                            IsEnabled="{Binding IsBusy}"/>
+                </StackPanel>
+            </DockPanel>
+
+            <ProgressBar Grid.Row="1" Height="4" Margin="4,0,4,5"
+                         IsIndeterminate="{Binding IsBusy}"
+                         Visibility="{Binding IsBusy, Converter={StaticResource BooleanToVisibilityConverter}}"/>
+
+            <DataGrid Grid.Row="2" Margin="4,3,4,4"
+                      ItemsSource="{Binding Categories}"
+                      IsEnabled="{Binding IsIdle}"
+                      AlternationCount="2">
+                <DataGrid.Columns>
+                    <DataGridTemplateColumn Header="SELECCIÓN" Width="78">
+                        <DataGridTemplateColumn.CellTemplate>
+                            <DataTemplate>
+                                <CheckBox IsChecked="{Binding IsSelected, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                          IsEnabled="{Binding CanSelect}"
+                                          HorizontalAlignment="Center"
+                                          VerticalAlignment="Center"/>
+                            </DataTemplate>
+                        </DataGridTemplateColumn.CellTemplate>
+                    </DataGridTemplateColumn>
+                    <DataGridTemplateColumn Header="CATEGORÍA" Width="1.3*">
+                        <DataGridTemplateColumn.CellTemplate>
+                            <DataTemplate>
+                                <StackPanel Margin="4,3">
+                                    <TextBlock Text="{Binding Name}" FontWeight="SemiBold"/>
+                                    <TextBlock Text="{Binding Description}" Style="{StaticResource DimText}"
+                                               FontSize="9"/>
+                                </StackPanel>
+                            </DataTemplate>
+                        </DataGridTemplateColumn.CellTemplate>
+                    </DataGridTemplateColumn>
+                    <DataGridTextColumn Header="ESTADO" Binding="{Binding SafetyLabel}" Width="105"/>
+                    <DataGridTextColumn Header="ARCHIVOS" Binding="{Binding FileCount, StringFormat={}{0:N0}}" Width="80"/>
+                    <DataGridTextColumn Header="ELEGIBLES" Binding="{Binding EligibleFileCount, StringFormat={}{0:N0}}" Width="80"/>
+                    <DataGridTextColumn Header="ESTIMADO" Binding="{Binding EligibleBytesText}" Width="100"/>
+                    <DataGridTemplateColumn Header="UBICACIÓN / RESULTADO" Width="2*">
+                        <DataGridTemplateColumn.CellTemplate>
+                            <DataTemplate>
+                                <StackPanel Margin="4,3" ToolTip="{Binding Location}">
+                                    <TextBlock Text="{Binding Location}" FontSize="9"
+                                               TextTrimming="CharacterEllipsis" MaxHeight="28"/>
+                                    <TextBlock Text="{Binding Status}" Style="{StaticResource DimText}"
+                                               FontSize="9"/>
+                                </StackPanel>
+                            </DataTemplate>
+                        </DataGridTemplateColumn.CellTemplate>
+                    </DataGridTemplateColumn>
+                </DataGrid.Columns>
+            </DataGrid>
+
+            <TextBlock Grid.Row="3" Text="HISTORIAL DETALLADO · rutas, estado por archivo, errores y bytes efectivamente liberados"
+                       Style="{StaticResource SectionTitle}" Margin="4,7,4,4"/>
+            <DataGrid Grid.Row="4" Margin="4,0,4,4"
+                      ItemsSource="{Binding History}"
+                      AlternationCount="2">
+                <DataGrid.Columns>
+                    <DataGridTextColumn Header="FECHA" Binding="{Binding Timestamp, StringFormat={}{0:yyyy-MM-dd HH:mm:ss}}" Width="150"/>
+                    <DataGridTextColumn Header="CATEGORÍA" Binding="{Binding Category}" Width="180"/>
+                    <DataGridTextColumn Header="RUTA" Binding="{Binding Path}" Width="2*"/>
+                    <DataGridTextColumn Header="ESTADO" Binding="{Binding Status}" Width="90"/>
+                    <DataGridTextColumn Header="BYTES LIBERADOS" Binding="{Binding Bytes, StringFormat={}{0:N0}}" Width="120"/>
+                    <DataGridTextColumn Header="DETALLE" Binding="{Binding Detail}" Width="2*"/>
+                </DataGrid.Columns>
+            </DataGrid>
+        </Grid>
+
+        <TextBlock Grid.Row="4"
+                   Text="Prefetch, Papelera, caché de Windows Update, Optimización de distribución y diagnóstico del registro permanecen en solo lectura. No se eliminan cookies, contraseñas, sesiones, historial, juegos ni configuraciones."
+                   Style="{StaticResource DimText}" Margin="5,7,5,0"/>
+    </Grid>
+</UserControl>

@@ -24,6 +24,10 @@ public sealed record OptimizationMeasurementCaptureResult(
     bool FpsCaptured,
     IReadOnlyList<string> Messages);
 
+public sealed record OptimizationBaselinePersistenceResult(
+    bool Persisted,
+    string? Error);
+
 /// <summary>
 /// Captura una ventana de medición real y comparable:
 /// - Métricas de sistema con LivePerformanceMonitor (CPU, GPU, RAM, Commit, procesos).
@@ -87,6 +91,14 @@ public sealed class OptimizationMeasurementService
         OptimizationMeasurementCaptureOptions options,
         CancellationToken cancellationToken)
     {
+        if (context.ModificationKey.StartsWith("startup:", StringComparison.OrdinalIgnoreCase))
+        {
+            context = context with
+            {
+                BootSessionId = StartupBootSessionGuard.CaptureCurrentSessionId()
+            };
+        }
+
         int duration = Math.Clamp(options.DurationSeconds, 5, 600);
         int fpsCaptureSeconds = Math.Max(duration, 10);
 
@@ -318,7 +330,8 @@ public sealed class OptimizationMeasurementService
             ActiveProcessCount: activeProcesses,
             FrameCount: frameCount,
             SampleCount: snapshotArray.Length,
-            DurationSeconds: Math.Max(systemDuration, fpsDuration));
+            DurationSeconds: Math.Max(systemDuration, fpsDuration),
+            FpsDurationSeconds: fpsCaptured ? fpsDuration : null);
 
         var measurement = new OptimizationMeasurement(
             Guid.NewGuid(),
@@ -334,14 +347,18 @@ public sealed class OptimizationMeasurementService
             messages);
     }
 
-    public async Task SaveBaselineAsync(
+    public async Task<OptimizationBaselinePersistenceResult> SaveBaselineAsync(
         OptimizationMeasurement baseline,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(baseline);
 
         if (_history is null)
-            return;
+        {
+            return new(
+                false,
+                "El almacenamiento persistente del historial no está disponible.");
+        }
 
         try
         {
@@ -350,10 +367,15 @@ public sealed class OptimizationMeasurementService
                 baseline,
                 baseline.CapturedAt,
                 cancellationToken);
+            return new(true, null);
         }
-        catch
+        catch (OperationCanceledException)
         {
-            // La medición sigue siendo válida en memoria; SQLite es respaldo.
+            throw;
+        }
+        catch (Exception ex)
+        {
+            return new(false, ex.Message);
         }
     }
 
@@ -366,45 +388,38 @@ public sealed class OptimizationMeasurementService
         if (_history is null)
             return result;
 
-        try
-        {
-            var records = await _history.GetLatestAsync(
-                "OptimizationBaseline",
-                500,
-                cancellationToken);
+        var records = await _history.GetLatestAsync(
+            "OptimizationBaseline",
+            500,
+            cancellationToken);
 
-            foreach (var record in records)
+        foreach (var record in records)
+        {
+            OptimizationMeasurement? measurement;
+
+            try
             {
-                OptimizationMeasurement? measurement;
-
-                try
-                {
-                    measurement = System.Text.Json.JsonSerializer
-                        .Deserialize<OptimizationMeasurement>(record.Payload);
-                }
-                catch
-                {
-                    continue;
-                }
-
-                if (measurement is null)
-                    continue;
-
-                string key = measurement.Context.ModificationKey;
-
-                if (string.IsNullOrWhiteSpace(key))
-                    continue;
-
-                if (!result.TryGetValue(key, out var existing) ||
-                    measurement.CapturedAt > existing.CapturedAt)
-                {
-                    result[key] = measurement;
-                }
+                measurement = System.Text.Json.JsonSerializer
+                    .Deserialize<OptimizationMeasurement>(record.Payload);
             }
-        }
-        catch
-        {
-            // Si SQLite falla, el diccionario en memoria sigue siendo útil.
+            catch (System.Text.Json.JsonException)
+            {
+                continue;
+            }
+
+            if (measurement is null)
+                continue;
+
+            string key = measurement.Context.ModificationKey;
+
+            if (string.IsNullOrWhiteSpace(key))
+                continue;
+
+            if (!result.TryGetValue(key, out var existing) ||
+                measurement.CapturedAt > existing.CapturedAt)
+            {
+                result[key] = measurement;
+            }
         }
 
         return result;

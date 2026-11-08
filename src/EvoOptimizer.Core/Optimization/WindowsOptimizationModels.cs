@@ -28,6 +28,7 @@ public enum WindowsOptimizationStatus
     PerformanceVerified,
     PerformanceInconclusive,
     Failed,
+    RollbackFailed,
     RolledBack,
     AlreadyOptimal,
     Unavailable
@@ -69,7 +70,9 @@ public sealed record WindowsOptimizationSnapshot(
     int StartupCandidateCount,
     bool UwpBackgroundDisabled = false,
     bool EdgeBackgroundDisabled = false,
-    bool WindowsSuggestionsDisabled = false);
+    bool WindowsSuggestionsDisabled = false,
+    bool? IsOnAcPower = null,
+    bool HasHighPerformancePlan = false);
 
 /// <summary>
 /// Ajuste propuesto con su estado actual, beneficio y riesgo esperados.
@@ -130,6 +133,7 @@ public sealed record WindowsOptimizationChange(
         WindowsOptimizationStatus.PerformanceVerified => "PERFORMANCE_VERIFIED",
         WindowsOptimizationStatus.PerformanceInconclusive => "RENDIMIENTO INCONCLUSO",
         WindowsOptimizationStatus.Failed => "FALLIDO",
+        WindowsOptimizationStatus.RollbackFailed => "RESTAURACIÓN PENDIENTE",
         WindowsOptimizationStatus.RolledBack => "REVERTIDO",
         WindowsOptimizationStatus.AlreadyOptimal => "YA ÓPTIMO",
         WindowsOptimizationStatus.Unavailable => "NO DISPONIBLE",
@@ -227,24 +231,36 @@ public static class WindowsOptimizationPlanner
     }
 
     private static WindowsOptimizationItem BuildPowerPlan(
-        WindowsOptimizationSnapshot snapshot) =>
-        new(
+        WindowsOptimizationSnapshot snapshot)
+    {
+        bool canApply = snapshot.IsBalancedPowerPlan &&
+                        snapshot.IsOnAcPower == true &&
+                        snapshot.HasHighPerformancePlan;
+
+        string? blockedReason = !snapshot.IsBalancedPowerPlan
+            ? "El plan activo no es Equilibrado."
+            : snapshot.IsOnAcPower != true
+                ? "Se exige alimentación AC verificada; con batería o estado desconocido no se habilita un plan de mayor consumo."
+                : !snapshot.HasHighPerformancePlan
+                    ? "Windows no expone un plan Alto rendimiento instalado."
+                    : null;
+
+        return new(
             Target: WindowsOptimizationTarget.PowerPlan,
             Title: "Plan de energía",
             CurrentState: string.IsNullOrWhiteSpace(snapshot.PowerPlanName)
                 ? "No se pudo leer el plan activo"
                 : snapshot.PowerPlanName,
-            ProposedState: snapshot.IsBalancedPowerPlan
+            ProposedState: canApply
                 ? "Cambiar a Alto rendimiento"
-                : "Sin cambios (el plan activo no es Equilibrado)",
+                : "Sin cambios (no se cumplen condiciones de alimentación/compatibilidad)",
             ExpectedBenefit:
-                "Mantiene las frecuencias de CPU/iGPU altas en lugar de escalar agresivamente a bajo consumo.",
+                "Puede modificar la política de escalado de rendimiento del procesador; no garantiza una mejora y debe medirse en el escenario objetivo.",
             Risk: "Medio. Mayor consumo eléctrico y temperatura; reversible en un paso.",
             RiskLevel: WindowsOptimizationRisk.Medium,
-            CanApply: snapshot.IsBalancedPowerPlan,
-            BlockedReason: snapshot.IsBalancedPowerPlan
-                ? null
-                : "El plan activo ya no es Equilibrado.");
+            CanApply: canApply,
+            BlockedReason: blockedReason);
+    }
 
     private static WindowsOptimizationItem BuildStartup(
         WindowsOptimizationSnapshot snapshot) =>

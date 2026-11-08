@@ -1,0 +1,63 @@
+<UserControl x:Class="EvoOptimizer.App.Views.EvoStandardPage"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             Background="{StaticResource BgBrush}">
+    <Grid ClipToBounds="True">
+        <Grid Margin="24,20">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+            </Grid.RowDefinitions>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+
+            <StackPanel Grid.Row="0" Grid.Column="0">
+                <TextBlock Text="{Binding PageTitle, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                           FontSize="26" FontWeight="Bold" Foreground="{StaticResource TextBrush}"/>
+                <TextBlock Text="{Binding Subtitle, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                           FontSize="12" Foreground="{StaticResource DimBrush}"
+                           TextWrapping="Wrap" Margin="0,5,0,0"/>
+            </StackPanel>
+
+            <Border x:Name="ActionBarSurface" Grid.Row="1" Grid.Column="0"
+                    Background="{StaticResource PanelBrush}"
+                    BorderBrush="{StaticResource LineBrush}" BorderThickness="1"
+                    CornerRadius="9" Padding="10" Margin="0,16,12,12">
+                <Border.Style>
+                    <Style TargetType="Border">
+                        <Setter Property="Visibility" Value="Visible"/>
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding ActionBarContent, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                         Value="{x:Null}">
+                                <Setter Property="Visibility" Value="Collapsed"/>
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </Border.Style>
+                <ContentControl Content="{Binding ActionBarContent, RelativeSource={RelativeSource AncestorType=UserControl}}"/>
+            </Border>
+
+            <Border Grid.Row="2" Grid.Column="0"
+                    Background="{StaticResource PanelBrush}"
+                    BorderBrush="{StaticResource LineBrush}" BorderThickness="1"
+                    CornerRadius="10" Padding="16">
+                <ContentControl Content="{Binding PageContent, RelativeSource={RelativeSource AncestorType=UserControl}}"/>
+            </Border>
+        </Grid>
+
+        <Border x:Name="ContextualSidePanel" Width="360"
+                HorizontalAlignment="Right" VerticalAlignment="Stretch"
+                Margin="0,16,16,16" Padding="18"
+                Background="#101720" BorderBrush="{StaticResource LineBrush}"
+                BorderThickness="1" CornerRadius="12" Visibility="Collapsed"
+                Panel.ZIndex="1">
+            <Border.RenderTransform>
+                <TranslateTransform x:Name="ContextPanelTransform" X="360"/>
+            </Border.RenderTransform>
+            <ContentControl Content="{Binding ContextualSidePanelContent, RelativeSource={RelativeSource AncestorType=UserControl}}"/>
+        </Border>
+    </Grid>
+</UserControl>

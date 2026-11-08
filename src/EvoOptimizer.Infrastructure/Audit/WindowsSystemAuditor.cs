@@ -23,30 +23,32 @@ function Get-ManyFiltered($Class, $Filter, $Props) {
   catch { @() }
 }
 $result = [ordered]@{
- computer = Get-One Win32_ComputerSystem 'Manufacturer','Model','TotalPhysicalMemory','SystemType','NumberOfLogicalProcessors'
- board = Get-One Win32_BaseBoard 'Manufacturer','Product','Version'
- bios = Get-One Win32_BIOS 'Manufacturer','SMBIOSBIOSVersion','ReleaseDate'
- cpu = Get-Many Win32_Processor 'Name','Manufacturer','NumberOfCores','NumberOfLogicalProcessors','MaxClockSpeed','CurrentClockSpeed','LoadPercentage','L2CacheSize','L3CacheSize','ProcessorId','SocketDesignation'
- gpu = Get-Many Win32_VideoController 'Name','AdapterCompatibility','DriverVersion','DriverDate','AdapterRAM','VideoProcessor','PNPDeviceID','CurrentHorizontalResolution','CurrentVerticalResolution','CurrentRefreshRate','Status'
- ram = Get-Many Win32_PhysicalMemory 'BankLabel','DeviceLocator','Manufacturer','PartNumber','Capacity','Speed','ConfiguredClockSpeed','DataWidth','TotalWidth','FormFactor','SMBIOSMemoryType','SerialNumber'
- memoryArray = Get-One Win32_PhysicalMemoryArray 'MemoryDevices','MaxCapacity','MemoryErrorCorrection'
- os = Get-One Win32_OperatingSystem 'Caption','Version','BuildNumber','OSArchitecture','LastBootUpTime'
- disks = Get-Many Win32_LogicalDisk 'DeviceID','VolumeName','FileSystem','Size','FreeSpace','DriveType'
- physicalDisks = Get-Many Win32_DiskDrive 'Index','DeviceID','Model','Manufacturer','MediaType','InterfaceType','Size','Status','FirmwareRevision','SerialNumber','BytesPerSector','Partitions','PNPDeviceID'
- partitions = Get-Many Win32_DiskPartition 'DeviceID','DiskIndex','Index','Type','Size','BootPartition'
- volumes = Get-Many Win32_Volume 'DriveLetter','Label','FileSystem','Capacity','FreeSpace','Status','HealthStatus'
+ computer = (Get-One Win32_ComputerSystem 'Manufacturer','Model','TotalPhysicalMemory','SystemType','NumberOfLogicalProcessors')
+ board = (Get-One Win32_BaseBoard 'Manufacturer','Product','Version')
+ bios = (Get-One Win32_BIOS 'Manufacturer','SMBIOSBIOSVersion','ReleaseDate')
+ cpu = (Get-Many Win32_Processor 'Name','Manufacturer','NumberOfCores','NumberOfLogicalProcessors','MaxClockSpeed','CurrentClockSpeed','LoadPercentage','L2CacheSize','L3CacheSize','ProcessorId','SocketDesignation')
+ gpu = (Get-Many Win32_VideoController 'Name','AdapterCompatibility','DriverVersion','DriverDate','AdapterRAM','VideoProcessor','PNPDeviceID','CurrentHorizontalResolution','CurrentVerticalResolution','CurrentRefreshRate','Status')
+ ram = (Get-Many Win32_PhysicalMemory 'BankLabel','DeviceLocator','Manufacturer','PartNumber','Capacity','Speed','ConfiguredClockSpeed','DataWidth','TotalWidth','FormFactor','SMBIOSMemoryType','SerialNumber')
+ memoryArray = (Get-One Win32_PhysicalMemoryArray 'MemoryDevices','MaxCapacity','MemoryErrorCorrection')
+ os = (Get-One Win32_OperatingSystem 'Caption','Version','BuildNumber','OSArchitecture','LastBootUpTime')
+ disks = (Get-Many Win32_LogicalDisk 'DeviceID','VolumeName','FileSystem','Size','FreeSpace','DriveType')
+ physicalDisks = (Get-Many Win32_DiskDrive 'Index','DeviceID','Model','Manufacturer','MediaType','InterfaceType','Size','Status','FirmwareRevision','SerialNumber','BytesPerSector','Partitions','PNPDeviceID')
+ partitions = (Get-Many Win32_DiskPartition 'DeviceID','DiskIndex','Index','Type','Size','BootPartition')
+ volumes = (Get-Many Win32_Volume 'DriveLetter','Label','FileSystem','Capacity','FreeSpace','Status','HealthStatus')
  smart = @(Get-CimInstance -Namespace 'root/wmi' -ClassName 'MSStorageDriver_FailurePredictStatus' -ErrorAction SilentlyContinue | Select-Object InstanceName,Active,PredictFailure,Reason)
  storage = @()
- try { $storage = @(Get-PhysicalDisk -ErrorAction Stop | Select-Object DeviceId,FriendlyName,MediaType,BusType,HealthStatus,OperationalStatus,Size,SerialNumber) } catch { $storage = @() }
  reliability = @()
- try { $reliability = @(Get-PhysicalDisk -ErrorAction Stop | Get-StorageReliabilityCounter -ErrorAction Stop | Select-Object DeviceId,Wear,Temperature,PowerOnHours,ReadErrorsTotal,WriteErrorsTotal,ReadErrorsUncorrected,WriteErrorsUncorrected,StartStopCycleCount) } catch { $reliability = @() }
  trim = ((fsutil behavior query DisableDeleteNotify 2>$null) | Out-String)
  powerPlan = ((powercfg /getactivescheme 2>$null) | Out-String)
- services = Get-ManyFiltered Win32_Service ""StartMode='Auto'"" 'Name','DisplayName','State','StartMode','ProcessId'
- startup = Get-Many Win32_StartupCommand 'Name','Command','Location','User'
- network = Get-Many Win32_NetworkAdapter 'Name','NetEnabled','Speed','MACAddress'
+ services = (Get-Many Win32_Service 'Name','DisplayName','State','StartMode','ProcessId')
+ startup = (Get-Many Win32_StartupCommand 'Name','Command','Location','User')
+ network = (Get-Many Win32_NetworkAdapter 'Name','NetEnabled','Speed','MACAddress')
  cs2 = @(Get-Process -Name cs2 -ErrorAction SilentlyContinue | Select-Object Id,ProcessName,CPU,WorkingSet64,StartTime)
 }
+$result.storage = @()
+try { $result.storage = @(Get-PhysicalDisk -ErrorAction Stop | Select-Object DeviceId,FriendlyName,MediaType,BusType,HealthStatus,OperationalStatus,Size,SerialNumber) } catch { $result.storage = @() }
+$result.reliability = @()
+try { $result.reliability = @(Get-PhysicalDisk -ErrorAction Stop | Get-StorageReliabilityCounter -ErrorAction Stop | Select-Object DeviceId,Wear,Temperature,PowerOnHours,ReadErrorsTotal,WriteErrorsTotal,ReadErrorsUncorrected,WriteErrorsUncorrected,StartStopCycleCount) } catch { $result.reliability = @() }
 $sw = [System.Diagnostics.Stopwatch]::StartNew()
 $first = @(Get-Process -ErrorAction SilentlyContinue | Select-Object Id,ProcessName,CPU,WorkingSet64)
 Start-Sleep -Milliseconds 1000
